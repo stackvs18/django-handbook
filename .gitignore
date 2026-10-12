@@ -30,3 +30,6 @@ pnpm-debug.log*
 *.pem
 .vscode/
 .idea/
+
+# TypeScript incremental build info
+*.tsbuildinfo
