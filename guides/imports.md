@@ -8,7 +8,7 @@ This page gives you:
 4. **Tricks for the test**, so VS Code and Django tell you the import when you forget it.
 
 > [!TIP] The honest truth
-> Nobody types imports from memory all day. Real developers use auto-import and copy from the file they wrote yesterday. In a practical, you only need about **15 lines**. Section 5 lists them. Learn those, and use the rules for anything else.
+> Nobody types imports from memory all day. Real developers use auto-import and copy from the file they wrote yesterday. In a practical, you only need about **13 lines**. Section 5 lists them. Learn those, and use the rules for anything else.
 
 ## 1. How to read an import line
 
@@ -39,16 +39,16 @@ The dot means "**the same app folder** as this file".
 ```python
 from .models import Patient, Doctor        # hospitalapp/models.py
 from .serializers import PatientSerializer # hospitalapp/serializers.py
-from .permissions import IsAdminOrReadOnly # hospitalapp/permissions.py
+from .forms import PatientForm            # hospitalapp/forms.py
 from . import views                        # the whole hospitalapp/views.py file
 ```
 
-The word after the dot is just **the file name without `.py`**. If you made `permissions.py`, you import with `from .permissions import ...`.
+The word after the dot is just **the file name without `.py`**. If you made `forms.py`, you import with `from .forms import ...`.
 
 The **project** `urls.py` is in a different folder from the app, so it can't use a dot. Use the app name instead:
 
 ```python
-from hospitalapp.api_views import PatientViewSet   # project urls.py → app file
+from hospitalapp import api_views   # project urls.py → the app's api_views.py file
 ```
 
 ### Rule 2: Django's path matches what the thing is about
@@ -202,60 +202,48 @@ from .models import Department, Doctor, Receptionist, Patient, Appointment
 ### serializers.py
 
 ```python title="hospitalapp/serializers.py — imports"
-from datetime import date                      # only if you compare dates
-from django.contrib.auth.models import User    # only for a register serializer
 from rest_framework import serializers
 from .models import Department, Doctor, Patient, Appointment
 ```
 
 | Import | What you get | Used like |
 |---|---|---|
-| `from rest_framework import serializers` | Everything for serializers | `serializers.ModelSerializer`, `serializers.ValidationError`, `serializers.CharField(...)` |
+| `from rest_framework import serializers` | Everything for serializers | `serializers.ModelSerializer`, `serializers.ValidationError`, `serializers.IntegerField(...)` |
 | `from .models import ...` | Your models | `class Meta: model = Patient` |
-| `from datetime import date` | Python's date type (not Django) | `if value < date.today():` |
-| `from django.contrib.auth.models import User` | The user model | `class Meta: model = User` in `RegisterSerializer` |
 
 **Memory hook:** the file is called `serializers.py`, and its main import is `from rest_framework import serializers`. **Same word.**
 
-### permissions.py
+### permissions.py (only if you need roles)
 
-```python title="hospitalapp/permissions.py — imports"
+The project guides don't have this file: one `IsAuthenticated` setting makes the API login-only. If a test asks for roles (for example "only staff can add products"), you write a class here:
+
+```python title="permissions.py — imports"
 from rest_framework.permissions import BasePermission
-from .models import Doctor, Receptionist   # only if you check role tables
 ```
 
 | Import | What you get | Used like |
 |---|---|---|
-| `BasePermission` | The class every custom permission extends | `class IsAdminOrReadOnly(BasePermission):` |
-| `from .models import ...` | Your role tables | `Doctor.objects.filter(user=user).exists()` |
+| `BasePermission` | The class every custom permission extends | `class IsStaffOrReadOnly(BasePermission):` |
 
-**Memory hook:** the file is called `permissions.py`, and the import comes from `rest_framework.permissions`. **Same word again.**
+**Memory hook:** the file is called `permissions.py`, and the import comes from `rest_framework.permissions`. **Same word.**
 
 ### api_views.py (DRF views)
 
 ```python title="inventoryapp/api_views.py — imports"
 from rest_framework import viewsets
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
-
 from .models import Category, Supplier, Product, StockTransaction
 from .serializers import CategorySerializer, SupplierSerializer, ProductSerializer, StockTransactionSerializer
-from .permissions import IsStaffOrReadOnly
 ```
 
 | Import | What you get | Used like |
 |---|---|---|
 | `from rest_framework import viewsets` | ViewSet classes | `class ProductViewSet(viewsets.ModelViewSet):` |
-| `api_view`, `permission_classes` from `.decorators` | Decorators for **function** API views | `@api_view(['POST'])` and `@permission_classes([AllowAny])` above a `def` |
-| `AllowAny`, `IsAuthenticated` from `.permissions` | DRF's built-in permissions | `permission_classes = [IsAuthenticated]` |
-| `Response` from `.response` | DRF's JSON response | `return Response(serializer.data, status=201)` |
-| `.models`, `.serializers`, `.permissions` | Your own files (Rule 1) | `queryset = ...`, `serializer_class = ...`, `permission_classes = [...]` |
+| `.models`, `.serializers` | Your own files (Rule 1) | `queryset = Product.objects.all()`, `serializer_class = ProductSerializer` |
 
-**Memory hook:** a ViewSet needs three things: rows (**models**), a converter (**serializers**) and rules (**permissions**). That's the three dot-imports, in the same order as the three class attributes.
+**Memory hook:** a ViewSet needs two things: rows (**models**) and a converter (**serializers**). That's the two dot-imports, in the same order as the two class attributes.
 
-> [!NOTE] Only using ModelViewSet?
-> If the file only has ViewSets (like the hospital one), you need just `from rest_framework import viewsets` plus your three dot-imports. `api_view`, `Response` and `AllowAny` are only for the extra function views (register, reports).
+> [!NOTE] Writing a function API view instead?
+> For a custom endpoint like `@api_view(['GET'])`, add `from rest_framework.decorators import api_view` and `from rest_framework.response import Response`.
 
 ### views.py (web pages, MVT)
 
@@ -268,7 +256,7 @@ from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth.decorators import login_required
 
 from .models import Doctor, Patient, Appointment
-from .permissions import is_doctor, is_admin_or_receptionist
+from .forms import PatientForm, AppointmentForm
 ```
 
 | Import | What you get | Used like |
@@ -277,8 +265,9 @@ from .permissions import is_doctor, is_admin_or_receptionist
 | `redirect` | Sends the browser to another URL | `return redirect('patient_list')` |
 | `get_object_or_404` | Gets one row, or shows a 404 page | `get_object_or_404(Patient, id=id)` |
 | `login`, `logout` from `django.contrib.auth` | Start / end a session | `login(request, user)` and `logout(request)` |
-| `AuthenticationForm` from `.auth.forms` | Ready-made login form | `AuthenticationForm(request, data=request.POST)` |
-| `UserCreationForm` from `.auth.forms` | Ready-made signup form | `UserCreationForm(request.POST)` |
+| `AuthenticationForm` from `.auth.forms` | Ready-made login form | `AuthenticationForm(request, data=request.POST or None)` |
+| `UserCreationForm` from `.auth.forms` | Ready-made signup form (inventory) | `UserCreationForm(request.POST or None)` |
+| `.forms` | Your own ModelForms (Rule 1) | `PatientForm(request.POST or None)` |
 | `login_required` from `.auth.decorators` | Blocks logged-out users | `@login_required(login_url='login')` |
 | `from datetime import date` | Today's date | `date.today()` |
 
@@ -306,7 +295,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from hospitalapp.api_views import DepartmentViewSet, DoctorViewSet, PatientViewSet, AppointmentViewSet
+from hospitalapp import api_views
 ```
 
 | Import | What you get | Used like |
@@ -315,23 +304,20 @@ from hospitalapp.api_views import DepartmentViewSet, DoctorViewSet, PatientViewS
 | `path, include` from `django.urls` | URL rules + "use another urls file" | `path('', include('hospitalapp.urls'))` |
 | `DefaultRouter` from `rest_framework.routers` | Builds API URLs for ViewSets | `router = DefaultRouter()` and `router.register(...)` |
 | `TokenObtainPairView`, `TokenRefreshView` | JWT login + refresh endpoints | `path('api/token/', TokenObtainPairView.as_view())` |
-| `from hospitalapp.api_views import ...` | Your ViewSets (no dot, because this is a different folder) | `router.register('patients', PatientViewSet, basename='patient')` |
+| `from hospitalapp import api_views` | Your whole `api_views.py` file (no dot, because this is a different folder) | `router.register('patients', api_views.PatientViewSet)` |
 
-**Memory hook:** `startproject` writes the first two lines for you (just add `, include`). Then add one line for the **router**, one for **JWT**, and one for **your viewsets**.
+**Memory hook:** `startproject` writes the first two lines for you (just add `, include`). Then add one line for the **router**, one for **JWT**, and one for **your api_views file**. Importing the whole file means you never have to list the viewset names.
 
-> [!TIP] Even shorter
-> You can write `from hospitalapp import api_views` and then use `api_views.PatientViewSet`. Then you never have to list the viewset names in the import. The inventory guide does this.
-
-### forms.py (only if you use Django forms)
+### forms.py (web pages)
 
 ```python title="forms.py — imports"
 from django import forms
-from .models import Patient
+from .models import Patient, Appointment
 ```
 
 | Import | Used like |
 |---|---|
-| `from django import forms` | `class PatientForm(forms.ModelForm):` and `forms.CharField(...)` |
+| `from django import forms` | `class PatientForm(forms.ModelForm):`, `forms.ValidationError(...)`, `forms.DateInput(...)` |
 | `from .models import Patient` | `class Meta: model = Patient` |
 
 ### tests.py (only if asked for tests)
@@ -345,36 +331,34 @@ from .models import Patient
 
 `startapp` already writes `from django.test import TestCase`. For API tests, the DRF version lives in `rest_framework.test`. Same file name, different package.
 
-## 5. The 15 lines you actually need
+## 5. The 13 lines you actually need
 
 Learn these, and both practical projects are covered:
 
-```python title="The 15 lines"
+```python title="The 13 lines"
 from django.db import models
 from django.contrib.auth.models import User
 from django.contrib import admin
+from django import forms
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, logout
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth.decorators import login_required
 from django.urls import path, include
 from rest_framework import serializers, viewsets
-from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .models import ...   # + .serializers, .permissions, . import views
+from .models import ...   # + .serializers, .forms, . import views
 ```
 
 Notice the **groups**:
 
 ```flow
-django.db / django.contrib / django.shortcuts / django.urls | plain Django (MVT)
+django.db / django.contrib / django.forms / django.shortcuts / django.urls | plain Django (MVT)
 django.contrib.auth (+ .models .forms .decorators) | everything about users and login
-rest_framework (+ .permissions .decorators .response .routers) | the API
+rest_framework (+ .routers) | the API
 rest_framework_simplejwt.views | JWT login, one line only
-.models / .serializers / .permissions / . import views | your own files
+.models / .serializers / .forms / . import views | your own files
 ```
 
 ## 6. "I need X" lookup table

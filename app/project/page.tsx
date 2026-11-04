@@ -18,7 +18,7 @@ export default function ProjectsPage() {
       </h1>
       <p className="mt-6 max-w-[62ch] text-lg leading-relaxed text-muted">
         Two interview-style practical projects, written at beginner level in the same style as class notes. Each one
-        starts at an empty folder and ends with a working REST API (serializers, viewsets, JWT, permissions) and simple
+        starts at an empty folder and ends with a working REST API (serializers, viewsets, router, JWT) and simple
         Django web pages. Every file has a copy button and a short note on what it does.
       </p>
 
