@@ -12,6 +12,9 @@ Every file is shown **in full**. Click **Copy**, paste it into VS Code, save. Af
 >
 > If the test only asks for an API, stop after Part B. If it only asks for web pages, do Part A and then Part C.
 
+> [!NOTE] Can't remember an import?
+> Every import line used here is explained, file by file, on the [Import cheat sheet](/imports), along with simple rules to rebuild any import you forget.
+
 > [!NOTE] Where the idea comes from
 > Open-source hospital apps (for example [hamzaezzine/Hospital-Management](https://github.com/hamzaezzine/Hospital-Management)) have doctors linked to user accounts, departments, patients and appointments with a status. We kept only those basic ideas and wrote everything in the simple style from class: plain `models.Model`, choices written by hand, function-based web views and `ModelViewSet` for the API.
 
@@ -29,7 +32,7 @@ Every file is shown **in full**. Click **Copy**, paste it into VS Code, save. Af
 
 ```flow
 Department | Cardiology, Orthopedics… one department has many doctors
-Doctor | name, specialization, fee… optionally linked to a login user
+Doctor | name, specialization, fee… linked to a login user
 Receptionist | name, phone, shift… linked to a login user
 Patient | name, age, gender, phone, blood group
 Appointment | patient + doctor + date + time, status: scheduled / completed / cancelled
@@ -174,8 +177,7 @@ class Department(models.Model):
 
 
 class Doctor(models.Model):
-    # Login account of the doctor. Optional: a doctor can exist without logging in.
-    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)   # the doctor's login account
     name = models.CharField(max_length=100)
     department = models.ForeignKey(Department, on_delete=models.CASCADE)
     specialization = models.CharField(max_length=100)
@@ -194,8 +196,7 @@ class Receptionist(models.Model):
         ('night', 'Night'),
     ]
 
-    # Login account of the receptionist. Required: receptionists always log in.
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)   # the receptionist's login account
     name = models.CharField(max_length=100)
     phone = models.CharField(max_length=15)
     shift = models.CharField(max_length=10, choices=SHIFT_CHOICES, default='morning')
@@ -258,12 +259,98 @@ class Appointment(models.Model):
 | Model | What it stores | Links |
 |---|---|---|
 | `Department` | Hospital departments | Has many doctors |
-| `Doctor` | Doctor details | `department` → one Department. `user` → one login account (optional) |
-| `Receptionist` | Front desk staff | `user` → one login account (required) |
+| `Doctor` | Doctor details | `department` → one Department. `user` → one login account |
+| `Receptionist` | Front desk staff | `user` → one login account |
 | `Patient` | Patient details | Has many appointments |
 | `Appointment` | One visit | `patient` → one Patient. `doctor` → one Doctor |
 
-**Field types used**
+### The link lines, explained slowly
+
+These two lines in `Doctor` are the only "hard" part of the models:
+
+```python
+user = models.OneToOneField(User, on_delete=models.CASCADE)
+department = models.ForeignKey(Department, on_delete=models.CASCADE)
+```
+
+Both mean the same basic thing: **"this column points to one row in another table."** Read the `department` line left to right:
+
+| Piece | Read it as |
+|---|---|
+| `department =` | the name of the column |
+| `models.ForeignKey(` | "this points to a row in another table" |
+| `Department` | which table it points to |
+| `on_delete=models.CASCADE` | "if that department is deleted, delete this doctor too" |
+
+**What the database really stores is just a number.** Django adds `_id` to the name:
+
+| Doctor: id | name | department_id | user_id |
+|---|---|---|---|
+| 1 | Mehta | 1 | 2 |
+| 2 | Rao | 2 | 3 |
+
+| Department: id | name |
+|---|---|
+| 1 | Cardiology |
+| 2 | Orthopedics |
+
+Mehta has `department_id = 1`, so Mehta is in Cardiology. In code you never look up the number yourself. Write `doctor.department.name` and Django follows the link and gives you `'Cardiology'`.
+
+**ForeignKey vs OneToOneField: the only difference**
+
+| | `ForeignKey` | `OneToOneField` |
+|---|---|---|
+| Can two doctors point to the same row? | **Yes.** Mehta and another doctor can both be in Cardiology (`department_id = 1` twice) | **No.** One login account belongs to only one doctor (`user_id` can't repeat) |
+| Real-life example | Many students → one class | One person → one Aadhaar card |
+| In `/admin/` | A dropdown to pick the department | A dropdown to pick the user |
+
+**`on_delete` is required** on every link, because Django must know what to do with the doctor if the department is deleted. In this project we always use `models.CASCADE` ("delete this one too").
+
+> [!TIP] The template line to remember
+> Every link field is the same line. Only the name and the model change:
+> ```python
+> name = models.ForeignKey(OtherModel, on_delete=models.CASCADE)
+> name = models.OneToOneField(OtherModel, on_delete=models.CASCADE)
+> ```
+> Use `ForeignKey` almost always. Use `OneToOneField` only for "one user account = one doctor / receptionist".
+
+### Choices, explained slowly
+
+Why does every choice have **two** words, like `('morning', 'Morning')`?
+
+```python
+GENDER_CHOICES = [
+    ('male', 'Male'),
+    ('female', 'Female'),
+    ('other', 'Other'),
+]
+gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
+```
+
+| | Left: `'male'` | Right: `'Male'` |
+|---|---|---|
+| Name | the **value** | the **label** |
+| Where it goes | **saved in the database** | **shown to people** |
+| Who uses it | your Python code, the API JSON, `request.POST` | the admin dropdown, `get_gender_display` in templates |
+
+- The **value** is for the computer. Keep it short, lowercase and never change it, because your code compares it: `if patient.gender == 'male':`.
+- The **label** is for humans. You can change it any time (for example to `'Male (M)'` or Hindi) without touching the database.
+- They are allowed to be the same, like `('A+', 'A+')` for blood groups.
+
+**What you actually see in this project**
+
+| Where | Shows | Example |
+|---|---|---|
+| `/admin/` dropdown | the **label** | You pick **Morning**, but `'morning'` is saved |
+| Database row | the **value** | `shift = 'morning'` |
+| API JSON (Postman) | the **value** | `"gender": "male"` |
+| Sending JSON to the API | must be the **value** | `"gender": "Male"` gives 400 *"Male" is not a valid choice* |
+| Template `{{ patient.gender }}` | the **value** | `male` |
+| Template `{{ patient.get_gender_display }}` | the **label** | `Male` |
+
+It's exactly like an HTML dropdown: `<option value="male">Male</option>`. The `value="male"` part is sent to the server, and the text `Male` is what the user sees.
+
+### All field types used
 
 | Field | Meaning |
 |---|---|
@@ -276,15 +363,13 @@ class Appointment(models.Model):
 | `ForeignKey(Department, ...)` | **Many-to-one.** Many doctors belong to one department |
 | `OneToOneField(User, ...)` | **One-to-one.** One user account belongs to exactly one doctor |
 
-**Options used**
+### All options used
 
-- `choices=GENDER_CHOICES` gives a fixed list of allowed values. Each pair is `('value saved in DB', 'Label shown to humans')`. Admin shows a dropdown automatically.
+- `choices=GENDER_CHOICES` gives a fixed list of allowed values (see *Choices, explained slowly* above).
 - `default='scheduled'` means a new appointment is "scheduled" unless you say otherwise.
 - `blank=True` means the field may be left empty in forms and in the API.
-- `null=True` means the database is allowed to store "nothing" (NULL). We need it on `Doctor.user` because a doctor may have no login.
 - `unique=True` means two departments cannot have the same name.
 - `on_delete=models.CASCADE` means: delete the department, and its doctors are deleted too. Delete a patient, and their appointments are deleted too.
-- `on_delete=models.SET_NULL` means: delete the doctor's user account, and the doctor stays but `user` becomes empty.
 - `__str__` is the text Django shows for a row (in admin dropdowns, for example `Dr. Mehta`).
 
 > [!IMPORTANT] Why separate Doctor and Receptionist tables instead of a custom User?
@@ -344,10 +429,11 @@ Open `http://127.0.0.1:8000/admin/`, log in, and add this data **in this order**
 1. **Departments** → add `Cardiology` and `Orthopedics`.
 2. **Users** (under Authentication) → add a user `drmehta` with password `Hospital@123`.
 3. **Doctors** → add a doctor: User = `drmehta`, Name = `Mehta`, Department = Cardiology, Specialization = `Heart`, Phone = `9876543210`.
-4. **Doctors** → add a second doctor with **no user**: Name = `Rao`, Department = Orthopedics, Specialization = `Bones`, Phone = `9876543211`.
-5. **Users** → add a user `reception1` with password `Hospital@123`.
-6. **Receptionists** → add one: User = `reception1`, Name = `Priya`, Phone = `9876543212`.
-7. **Patients** → add one or two patients.
+4. **Users** → add a user `drrao` with password `Hospital@123`.
+5. **Doctors** → add a second doctor: User = `drrao`, Name = `Rao`, Department = Orthopedics, Specialization = `Bones`, Phone = `9876543211`.
+6. **Users** → add a user `reception1` with password `Hospital@123`.
+7. **Receptionists** → add one: User = `reception1`, Name = `Priya`, Phone = `9876543212`.
+8. **Patients** → add one or two patients.
 
 You now have one login for each role:
 
@@ -356,6 +442,7 @@ You now have one login for each role:
 | *(your superuser)* | *(your password)* | Admin |
 | `reception1` | `Hospital@123` | Receptionist |
 | `drmehta` | `Hospital@123` | Doctor (sees only Dr. Mehta's appointments) |
+| `drrao` | `Hospital@123` | Doctor (sees only Dr. Rao's appointments) |
 
 > [!TIP] Checkpoint
 > If you can see all five tables in `/admin/` and add rows, **Part A is done**. You already have something to show.
@@ -1596,7 +1683,8 @@ Response | 201 Created + the appointment as JSON
 | How do you do roles? | Separate `Doctor` and `Receptionist` tables linked to `User`, plus custom `BasePermission` classes that check those tables. |
 | Why `{% csrf_token %}`? | It stops other websites from submitting forms as you. Django rejects POST forms without it. |
 | ForeignKey vs OneToOneField? | ForeignKey = many-to-one (many appointments → one doctor). OneToOne = exactly one each (one user ↔ one doctor). |
-| `CASCADE` vs `SET_NULL`? | CASCADE deletes the child rows too. SET_NULL keeps them and empties the link (needs `null=True`). |
+| What does `on_delete=models.CASCADE` mean? | When the linked row is deleted, delete this row too. Delete a patient, and their appointments go too. |
+| Why two words in choices, `('male', 'Male')`? | The first is saved in the database and used in code. The second is the label people see. |
 
 ## 19. Common errors and fixes
 

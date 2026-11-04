@@ -47,6 +47,19 @@ export function ChapterNav({ onNavigate }: { onNavigate?: () => void }) {
               </li>
             );
           })}
+          <li>
+            <Link
+              href="/imports"
+              onClick={onNavigate}
+              aria-current={pathname === "/imports" ? "page" : undefined}
+              className={`flex items-start gap-3 rounded-md px-3 py-[0.4rem] leading-snug transition-colors ${
+                pathname === "/imports" ? "bg-hover text-fg" : "text-muted hover:bg-hover/60 hover:text-fg"
+              }`}
+            >
+              <span className="mt-[0.2rem] w-5 shrink-0 font-mono text-[0.68rem] text-faint">▸</span>
+              <span className="flex-1">Import cheat sheet</span>
+            </Link>
+          </li>
         </ul>
       </div>
       {PARTS.map((part, pi) => (

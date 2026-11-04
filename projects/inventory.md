@@ -12,6 +12,9 @@ Every file is shown **in full**. Click **Copy**, paste it into VS Code, save. Af
 >
 > If the test only asks for an API, stop after Part B. If it only asks for web pages, do Part A and then Part C.
 
+> [!NOTE] Can't remember an import?
+> Every import line used here is explained, file by file, on the [Import cheat sheet](/imports), along with simple rules to rebuild any import you forget.
+
 > [!NOTE] Where the idea comes from
 > Open-source inventory apps (for example [munuhee/sales-and-inventory-management](https://github.com/munuhee/sales-and-inventory-management)) have categories, items, vendors, and stock that goes up on a purchase and down on a sale. We kept only those basic ideas and wrote everything in the simple style from class: plain `models.Model`, choices written by hand, function-based web views and `ModelViewSet` for the API.
 
@@ -204,7 +207,7 @@ class Product(models.Model):
     name = models.CharField(max_length=100)
     sku = models.CharField(max_length=50, unique=True)   # product code, e.g. USB-01
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
-    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
+    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE)
     unit = models.CharField(max_length=10, choices=UNIT_CHOICES, default='pcs')
     price = models.DecimalField(max_digits=10, decimal_places=2)
     quantity = models.IntegerField(default=0)        # changes ONLY through stock transactions
@@ -231,7 +234,7 @@ class StockTransaction(models.Model):
     transaction_type = models.CharField(max_length=10, choices=TYPE_CHOICES)
     quantity = models.IntegerField()
     note = models.CharField(max_length=200, blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)   # who recorded it
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -244,10 +247,90 @@ class StockTransaction(models.Model):
 |---|---|---|
 | `Category` | Product groups | Has many products |
 | `Supplier` | Who we buy from | Has many products |
-| `Product` | One item in the store | `category` → one Category. `supplier` → one Supplier (optional) |
+| `Product` | One item in the store | `category` → one Category. `supplier` → one Supplier |
 | `StockTransaction` | One stock movement (in or out) | `product` → one Product. `created_by` → the user who recorded it |
 
-**Field types used**
+### The link lines, explained slowly
+
+These two lines in `Product` are the only "hard" part of the models:
+
+```python
+category = models.ForeignKey(Category, on_delete=models.CASCADE)
+supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE)
+```
+
+Both mean the same thing: **"this column points to one row in another table."** Read the `category` line left to right:
+
+| Piece | Read it as |
+|---|---|
+| `category =` | the name of the column |
+| `models.ForeignKey(` | "this points to a row in another table" |
+| `Category` | which table it points to |
+| `on_delete=models.CASCADE` | "if that category is deleted, delete this product too" |
+
+**What the database really stores is just a number.** Django adds `_id` to the name:
+
+| Product: id | name | category_id | supplier_id |
+|---|---|---|---|
+| 1 | USB Cable | 1 | 1 |
+| 2 | Notebook | 2 | 1 |
+
+| Category: id | name |
+|---|---|
+| 1 | Electronics |
+| 2 | Stationery |
+
+USB Cable has `category_id = 1`, so it's in Electronics. In code you never look up the number yourself. Write `product.category.name` and Django follows the link and gives you `'Electronics'`.
+
+**Why `ForeignKey`?** Many products can point to the **same** category (`category_id = 1` many times), just like many students belong to one class. In `/admin/` it shows as a dropdown.
+
+**`on_delete` is required** on every link, because Django must know what to do with the product if its category is deleted. In this project we always use `models.CASCADE` ("delete this one too").
+
+> [!TIP] The template line to remember
+> Every link field is the same line. Only the name and the model change:
+> ```python
+> name = models.ForeignKey(OtherModel, on_delete=models.CASCADE)
+> name = models.OneToOneField(OtherModel, on_delete=models.CASCADE)
+> ```
+> Use `ForeignKey` almost always. `OneToOneField` is for "exactly one each", like one user account = one doctor (see the hospital project).
+
+### Choices, explained slowly
+
+Why does every choice have **two** words, like `('pcs', 'Pieces')`?
+
+```python
+UNIT_CHOICES = [
+    ('pcs', 'Pieces'),
+    ('kg', 'Kilogram'),
+    ('ltr', 'Litre'),
+    ('box', 'Box'),
+]
+unit = models.CharField(max_length=10, choices=UNIT_CHOICES, default='pcs')
+```
+
+| | Left: `'pcs'` | Right: `'Pieces'` |
+|---|---|---|
+| Name | the **value** | the **label** |
+| Where it goes | **saved in the database** | **shown to people** |
+| Who uses it | your Python code, the API JSON, `request.POST` | the admin dropdown, `get_unit_display` in templates |
+
+- The **value** is for the computer. Keep it short, lowercase and never change it, because your code compares it: `if product.unit == 'kg':`.
+- The **label** is for humans. You can change it any time (for example to `'Pieces (nos)'` or Hindi) without touching the database.
+
+**What you actually see in this project**
+
+| Where | Shows | Example |
+|---|---|---|
+| `/admin/` dropdown | the **label** | You pick **Kilogram**, but `'kg'` is saved |
+| Database row | the **value** | `unit = 'kg'` |
+| API JSON (Postman) | the **value** | `"unit": "kg"` |
+| Sending JSON to the API | must be the **value** | `"unit": "Kilogram"` gives 400 *"Kilogram" is not a valid choice* |
+| Template `{{ product.unit }}` | the **value** | `kg` |
+| Template `{{ product.get_unit_display }}` | the **label** | `Kilogram` |
+
+It's exactly like an HTML dropdown: `<option value="kg">Kilogram</option>`. The `value="kg"` part is sent to the server, and the text `Kilogram` is what the user sees.
+
+### All field types used
 
 | Field | Meaning |
 |---|---|
@@ -259,14 +342,13 @@ class StockTransaction(models.Model):
 | `DateTimeField(auto_now_add=True)` | Filled in automatically when the row is created |
 | `ForeignKey(Category, ...)` | **Many-to-one.** Many products belong to one category |
 
-**Options and methods used**
+### All options and methods used
 
-- `choices=UNIT_CHOICES` gives a fixed list of allowed values. Each pair is `('value saved in DB', 'Label shown to humans')`.
+- `choices=UNIT_CHOICES` gives a fixed list of allowed values (see *Choices, explained slowly* above).
 - `unique=True` on `sku` means two products can't have the same code.
 - `default=0` means a new product starts with 0 in stock.
-- `blank=True` means the field may be left empty in forms and in the API. `null=True` lets the database store "nothing" (NULL). A supplier is optional, so it needs both.
-- `on_delete=models.CASCADE` means: delete a category, and its products are deleted too.
-- `on_delete=models.SET_NULL` means: delete a supplier, and the products stay but `supplier` becomes empty.
+- `blank=True` means the field may be left empty in forms and in the API (description, email, address, note).
+- `on_delete=models.CASCADE` means: delete a category (or supplier), and its products are deleted too.
 - `is_low_stock()` and `stock_value()` are **normal Python methods** on the model. Use them anywhere: `product.is_low_stock()` in views, `{% if product.is_low_stock %}` in templates.
 - `__str__` is the text Django shows for a row (in admin dropdowns, for example `USB Cable (USB-01)`).
 
@@ -320,7 +402,7 @@ Open `http://127.0.0.1:8000/admin/`, log in, and add this data **in this order**
 1. **Categories** → add `Electronics` and `Stationery`.
 2. **Suppliers** → add `ABC Traders`, phone `9876543210`.
 3. **Products** → add `USB Cable`: SKU `USB-01`, category Electronics, supplier ABC Traders, price `199`, reorder level `5`. Leave quantity at `0`.
-4. **Products** → add `Notebook`: SKU `NB-01`, category Stationery, price `45`, reorder level `20`.
+4. **Products** → add `Notebook`: SKU `NB-01`, category Stationery, supplier ABC Traders, price `45`, reorder level `20`.
 
 You'll make the **worker** account in Step 12 with the register API (or in Part C with the signup page).
 
@@ -384,7 +466,7 @@ class SupplierSerializer(serializers.ModelSerializer):
 class ProductSerializer(serializers.ModelSerializer):
     # Extra read-only fields, only shown in the output
     category_name = serializers.CharField(source='category.name', read_only=True)
-    supplier_name = serializers.CharField(source='supplier.name', read_only=True, allow_null=True)
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     is_low_stock = serializers.BooleanField(read_only=True)
     stock_value = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
@@ -456,7 +538,6 @@ class StockTransactionSerializer(serializers.ModelSerializer):
 | Field | What it does |
 |---|---|
 | `category_name = CharField(source='category.name', read_only=True)` | Follows the foreign key and shows the name next to the id |
-| `supplier_name = CharField(..., allow_null=True)` | Same, but the supplier is optional. `allow_null=True` shows `null` when a product has no supplier |
 | `is_low_stock = BooleanField(read_only=True)` | No `source` is given, so DRF uses the field name and **calls the model method** `is_low_stock()` |
 | `stock_value = DecimalField(..., read_only=True)` | Same idea: calls `stock_value()` (quantity × price) |
 | `read_only_fields = ['quantity']` | Clients can **see** the quantity but can't **send** it. That keeps the inventory honest |
@@ -778,8 +859,8 @@ The response has two tokens:
 |---|---|---|---|
 | worker1 | `GET /api/products/` | | 200, list of products |
 | worker1 | `POST /api/products/` | any | 403, workers can't add products |
-| manager | `POST /api/products/` | `{"name": "Mouse", "sku": "ms-01", "category": 1, "unit": "pcs", "price": "499.00", "reorder_level": 5}` | 201, `sku` saved as `MS-01`, `quantity` 0 |
-| manager | `POST /api/products/` | `{"name": "Bad", "sku": "x1", "category": 1, "price": "0"}` | 400, price must be greater than 0 |
+| manager | `POST /api/products/` | `{"name": "Mouse", "sku": "ms-01", "category": 1, "supplier": 1, "unit": "pcs", "price": "499.00", "reorder_level": 5}` | 201, `sku` saved as `MS-01`, `quantity` 0 |
+| manager | `POST /api/products/` | `{"name": "Bad", "sku": "x1", "category": 1, "supplier": 1, "price": "0"}` | 400, price must be greater than 0 |
 | worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "in", "quantity": 50, "note": "From ABC Traders"}` | 201, USB Cable quantity becomes 50 |
 | worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "out", "quantity": 70}` | 400, *Not enough stock. Only 50 left* |
 | worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "out", "quantity": 46, "note": "Sold"}` | 201, quantity becomes 4 |
@@ -901,7 +982,7 @@ def add_product(request):
                 name=request.POST.get('name'),
                 sku=sku,
                 category_id=request.POST.get('category'),
-                supplier_id=request.POST.get('supplier') or None,   # empty dropdown -> no supplier
+                supplier_id=request.POST.get('supplier'),
                 unit=request.POST.get('unit'),
                 price=request.POST.get('price'),
                 reorder_level=request.POST.get('reorder_level'),
@@ -933,7 +1014,7 @@ def edit_product(request, id):
             product.name = request.POST.get('name')
             product.sku = sku
             product.category_id = request.POST.get('category')
-            product.supplier_id = request.POST.get('supplier') or None
+            product.supplier_id = request.POST.get('supplier')
             product.unit = request.POST.get('unit')
             product.price = request.POST.get('price')
             product.reorder_level = request.POST.get('reorder_level')
@@ -1031,7 +1112,6 @@ def transaction_list(request):
 - `.upper()` saves the SKU in capitals, the same as the serializer does.
 - We check the SKU ourselves (`filter(sku=sku).exists()`) and show a friendly error, instead of letting the database crash on `unique=True`. In edit, `.exclude(id=product.id)` skips the product we're editing.
 - `category_id=request.POST.get('category')` saves a foreign key straight from the id in the dropdown.
-- `request.POST.get('supplier') or None`: when "No supplier" is picked, the value is the empty text `''`. `'' or None` gives `None`, which saves as NULL.
 - Notice there's **no quantity input**. Quantity only changes on the Stock page.
 
 **delete_product**
@@ -1322,7 +1402,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
                 <td>{{ product.name }}</td>
                 <td>{{ product.sku }}</td>
                 <td>{{ product.category.name }}</td>
-                <td>{% if product.supplier %}{{ product.supplier.name }}{% else %}-{% endif %}</td>
+                <td>{{ product.supplier.name }}</td>
                 <td>Rs. {{ product.price }}</td>
                 <td>
                     {% if product.is_low_stock %}
@@ -1354,7 +1434,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 **What it does**
 - The search form uses **GET**, so the text ends up in the URL (`/products/?search=usb`).
 - `{% if product.is_low_stock %}` calls the model method. In templates you write it **without** `()`.
-- `{% if product.supplier %}` is needed because the supplier can be empty. Then we show `-`.
+- `product.category.name` and `product.supplier.name` follow the foreign keys to show names instead of id numbers.
 - `{% if user.is_staff %}` hides the Add, Edit and Delete buttons from workers.
 - Delete is a small **POST form** with `{% csrf_token %}`, plus a browser `confirm(...)` popup.
 
@@ -1387,8 +1467,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
         </select>
 
         <label>Supplier</label>
-        <select name="supplier">
-            <option value="">-- No supplier --</option>
+        <select name="supplier" required>
             {% for supplier in suppliers %}
                 <option value="{{ supplier.id }}">{{ supplier.name }}</option>
             {% endfor %}
@@ -1417,7 +1496,6 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 **What it does**
 - Every input's `name` matches a `request.POST.get('...')` in the view.
 - Category and supplier dropdowns are built with `{% for %}` loops. They send the **id** of the chosen row.
-- The first supplier option has `value=""`. That's the empty text the view turns into `None`.
 - Unit options use the **values** from `UNIT_CHOICES` (`pcs`, `kg`...).
 - `step="0.01"` lets the price have paise (decimals). `min` and `required` are quick browser checks.
 
@@ -1450,8 +1528,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
         </select>
 
         <label>Supplier</label>
-        <select name="supplier">
-            <option value="">-- No supplier --</option>
+        <select name="supplier" required>
             {% for supplier in suppliers %}
                 <option value="{{ supplier.id }}" {% if supplier.id == product.supplier_id %}selected{% endif %}>{{ supplier.name }}</option>
             {% endfor %}
@@ -1616,6 +1693,7 @@ Response | 201 Created + the transaction as JSON
 | What is `perform_create`? | A ViewSet hook that runs after validation, in place of `serializer.save()`. We use it to add `created_by` and update the stock. |
 | Why can't you edit stock transactions? | `http_method_names = ['get', 'post']`. Changing history would make the quantities wrong. To fix a mistake you add a new transaction. |
 | `@api_view` vs `ModelViewSet`? | `@api_view` is a single function for custom endpoints (register, reports). `ModelViewSet` is full CRUD for one model. |
+| Why two words in choices, `('kg', 'Kilogram')`? | The first is saved in the database and used in code. The second is the label people see. |
 | What does `many=True` do? | It tells the serializer it's getting a list of objects, so it returns a JSON list. |
 | Why `DecimalField` for price? | It's exact. A float can't store values like 0.1 exactly, which is bad for money. |
 | What is JWT? | A signed token given at login. The client sends it in the `Authorization: Bearer` header on every request. |
