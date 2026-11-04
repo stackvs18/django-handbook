@@ -546,57 +546,24 @@ class AppointmentSerializer(serializers.ModelSerializer):
         return data
 ```
 
-### `class Meta`, explained slowly
+**In one line:** a serializer turns a model row into JSON, and checks JSON before saving it. It's a `ModelForm` for APIs.
 
-Every serializer above has a small class **inside** it called `Meta`:
+**`class Meta`** is a settings box, the same as in a `ModelForm`:
+- `model = Patient` → which table to copy fields from.
+- `fields = [...]` → which columns go into the JSON. Every name must be a real field on the model, or you get *"Field name `x` is not valid for model"*.
 
-```python
-class PatientSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Patient
-        fields = ['id', 'name', 'age']
-```
+**The extra bits**
+- `department_name = serializers.CharField(source='department.name', read_only=True)` shows the department's **name** next to its id. It is output only.
+- Foreign keys (`doctor`, `patient`, `department`) are sent and shown as **ids**, e.g. `"doctor": 1`.
 
-`Meta` is just a **settings box** for the class around it. It doesn't make fields itself. It answers two questions for `ModelSerializer`:
-
-| Line | Question it answers |
-|---|---|
-| `model = Patient` | "Which model should I copy the fields from?" |
-| `fields = [...]` | "Which of those fields should I include in the JSON?" |
-| `read_only_fields = [...]` *(optional)* | "Which fields can be shown but never sent by the client?" |
-
-Without `Meta`, `ModelSerializer` doesn't know which table you mean, and Django raises an error. The name must be exactly `Meta`, with a capital M and indented **inside** the serializer class.
-
-You have already seen the same idea in a `ModelForm`, which also uses `class Meta: model = ... fields = ...`. Models can have a `Meta` too (for example `class Meta: ordering = ['name']`). The idea is always the same: **`Meta` holds settings about the class, not data.**
-
-**What it does**
-
-- **`ModelSerializer`** builds the fields from the model for you, just like `ModelForm` does for forms. `Meta.model` says which model. `Meta.fields` lists which columns appear in the JSON.
-- **Output (model → JSON).** A Patient object becomes:
-  ```json
-  {"id": 1, "name": "Amit", "age": 34, "gender": "male", "phone": "9123456789", "blood_group": "B+", "address": "", "created_at": "2030-01-10T09:12:00Z"}
-  ```
-- **Input (JSON → model).** When someone POSTs JSON, the serializer checks every field, runs your `validate_...` methods, then saves.
-- **Foreign keys** like `department`, `patient` and `doctor` are sent and shown as **ids** (`"doctor": 1`).
-- **`source='department.name'`** follows the foreign key and shows the department's name. `read_only=True` means it only appears in the output. Clients can't send it.
-- **`created_at`** is filled in automatically by the model (`auto_now_add`), so DRF makes it read-only on its own.
-
-**Validation methods**
-
-| Method | When it runs | Example |
-|---|---|---|
-| `validate_phone(self, value)` | For one field. The name must be `validate_<fieldname>` | Phone must be 10 digits |
-| `validate_age(self, value)` | For one field | Age between 0 and 120 |
-| `validate_date(self, value)` | For one field | No appointments in the past |
-| `validate(self, data)` | Once, with **all** fields together | Same doctor + same date + same time = double booking |
-
-- To reject a value, `raise serializers.ValidationError('message')`. DRF then returns **400 Bad Request** with your message.
-- To accept it, `return value` (or `return data` in `validate`).
-- `self.instance` is the existing appointment when you **update** (PUT/PATCH) and `None` when you **create** (POST). That's why we exclude it, so an appointment doesn't clash with itself.
-- `data.get('doctor')` is used instead of `data['doctor']` because a PATCH may send only some fields.
+**Validation**
+- `validate_<field>(self, value)` checks **one** field. The name must match the field exactly (`validate_phone` → `phone`).
+- `validate(self, data)` checks **several** fields together. Here: same doctor + date + time = double booking.
+- Bad value → `raise serializers.ValidationError('...')` → the API returns **400**. Good value → `return value` (or `return data`).
+- `self.instance` is the row being edited (PUT/PATCH), so we exclude it and an appointment doesn't clash with itself.
 
 > [!NOTE] Why no Receptionist serializer?
-> Receptionists are created by the admin in `/admin/`, so the API doesn't need them. Only make a serializer for something the API actually exposes.
+> Receptionists are added in `/admin/`, so the API doesn't need them.
 
 ## 8. permissions.py (roles)
 
@@ -661,12 +628,11 @@ class AppointmentPermission(BasePermission):
         return is_admin_or_receptionist(request.user) or is_doctor(request.user)
 ```
 
-**What it does**
+**In one line:** this file decides **who may do what**.
 
-- **Helper functions** answer one question each, "is this user a doctor?", by checking the tables from Step 3. `.filter(...).exists()` returns `True` or `False`.
-- **Permission classes** extend `BasePermission` and override `has_permission(self, request, view)`. DRF calls it **before** every request. Return `True` to allow the request or `False` to block it.
-- `request.method` is `'GET'`, `'POST'`, `'PUT'`, `'PATCH'` or `'DELETE'`. `GET`, `HEAD` and `OPTIONS` only read data, so we call them "read-only".
-- If you're not logged in, the API returns **401 Unauthorized**. If you're logged in but not allowed, it returns **403 Forbidden**.
+- **Helper functions** answer yes/no: "is this user a doctor?" `.filter(...).exists()` gives `True` or `False`. The web pages reuse them in Part C.
+- **Permission classes** run before every API request. `has_permission` returns `True` (allow) or `False` (block).
+- `GET`, `HEAD` and `OPTIONS` only read data. Everything else changes data.
 
 | Class | Used on | Rule |
 |---|---|---|
@@ -674,8 +640,7 @@ class AppointmentPermission(BasePermission):
 | `IsAdminOrReceptionistOrReadOnly` | Patients | Everyone reads, front desk writes |
 | `AppointmentPermission` | Appointments | Front desk books, doctor may update |
 
-> [!NOTE] `has_permission` vs `has_object_permission`
-> `has_permission` checks the **whole request** ("can this user POST to appointments at all?"). `has_object_permission` checks **one row** ("can this user edit appointment #5?"). We don't need the second one. A doctor can only edit their own appointments because the doctor can't even **see** anyone else's (see `get_queryset` in Step 9).
+Not logged in → **401**. Logged in but not allowed → **403**.
 
 ## 9. api_views.py (ViewSets)
 
@@ -750,27 +715,18 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return appointments
 ```
 
-**What it does**
+**In one line:** one `ModelViewSet` = list, create, read, update and delete for one table.
 
-- **`ModelViewSet`** gives you 6 actions from one class, with no extra code:
+Every viewset needs three things:
+- `serializer_class` → which serializer from Step 7.
+- `permission_classes` → which rule from Step 8.
+- the rows → `queryset = ...` (same rows for everyone) **or** `get_queryset(self)` (rows depend on the request).
 
-| HTTP | URL | Action |
-|---|---|---|
-| GET | `/api/patients/` | `list` (all patients) |
-| POST | `/api/patients/` | `create` |
-| GET | `/api/patients/1/` | `retrieve` (one patient) |
-| PUT | `/api/patients/1/` | `update` (send all fields) |
-| PATCH | `/api/patients/1/` | `partial_update` (send only changed fields) |
-| DELETE | `/api/patients/1/` | `destroy` |
-
-- `serializer_class` says which serializer converts the data. `permission_classes` says which permission class from Step 8 to check.
-- **`queryset = ...`** is a fixed list of rows. Departments use it because they never change per user.
-- **`get_queryset(self)`** is a method you write when the rows depend on the request. DRF uses it for list, retrieve, update and delete.
-  - `self.request.query_params.get('search')` reads `?search=...` from the URL. It returns `None` if it's missing.
-  - `name__icontains=search` means "name contains this text, ignoring upper/lower case".
-  - `department__name__icontains` goes through the foreign key: the doctor's department's name.
-  - `doctor__user=user` means "appointments whose doctor is linked to this login user". That's how a doctor sees only their own rows. It also means a doctor gets **404** if they try to open someone else's appointment.
-- `.order_by('-id')` sorts newest first. The `-` means descending.
+What `get_queryset` does here:
+- `self.request.query_params.get('search')` reads `?search=...` from the URL.
+- `name__icontains=search` = "name contains this text, any case".
+- `doctor__user=user` = "only this doctor's appointments". Another doctor's appointment gives **404**.
+- `order_by('-id')` = newest first.
 
 ## 10. Project urls.py (router + JWT URLs)
 
@@ -805,14 +761,12 @@ urlpatterns = [
 ]
 ```
 
-**What it does**
+**In one line:** the router writes the API URLs for you.
 
-- `DefaultRouter()` makes a router. Each `router.register('patients', PatientViewSet, basename='patient')` line creates **both** URLs, `patients/` and `patients/<id>/`, for all 6 actions.
-- `basename` is a prefix for the URL names (`patient-list`, `patient-detail`). It's **required** here because some viewsets use `get_queryset` instead of a `queryset` attribute.
-- `path('api/', include(router.urls))` puts every router URL under `/api/`. `DefaultRouter` also makes a clickable index page at `/api/`.
-- `TokenObtainPairView` is the **login** endpoint. POST a username and password, and you get two tokens back.
-- `TokenRefreshView` takes a refresh token and gives back a new access token.
-- `api-auth/` adds a **Log in** link to DRF's browser pages, so you can test in the browser without Postman.
+- Each `router.register('patients', PatientViewSet, basename='patient')` makes `/api/patients/` and `/api/patients/<id>/`.
+- `basename` is needed because some viewsets use `get_queryset` instead of `queryset`.
+- `api/token/` = **login** (username + password → tokens). `api/token/refresh/` = new access token.
+- `api-auth/` adds a **Log in** link to the browser API pages.
 
 ## 11. Switch on JWT (the one extra setting)
 
@@ -827,13 +781,10 @@ REST_FRAMEWORK = {
 }
 ```
 
-**What it does**
-- `DEFAULT_AUTHENTICATION_CLASSES` tells DRF **how to work out who the user is** on each API request.
-- `JWTAuthentication` reads the header `Authorization: Bearer <token>` (what Postman sends).
-- `SessionAuthentication` reads the normal Django login cookie (what the browser sends after you log in through `api-auth/`).
+**In one line:** this tells DRF to accept a JWT token (Postman) **and** the normal login cookie (browser).
 
-> [!IMPORTANT] Is this block really needed?
-> **Yes, this one is.** Without it, DRF only checks the session cookie and ignores the `Bearer` token completely. Postman would always get *"Authentication credentials were not provided"* even with a valid token. You don't need anything else: no token lifetimes, no pagination and no `LOGIN_URL`. The defaults are fine (access token lasts 5 minutes, refresh token lasts 1 day).
+> [!IMPORTANT] Don't skip it
+> Without this block, Postman always gets *"Authentication credentials were not provided"*, even with a valid token. Nothing else is needed. The access token lasts 5 minutes and the refresh token lasts 1 day.
 
 ## 12. Test the API
 
@@ -848,10 +799,7 @@ Restart the server if it isn't running (`python manage.py runserver`).
 
 ### In Postman (with JWT)
 
-**Step 1: log in and get tokens**
-
-- Method `POST`, URL `http://127.0.0.1:8000/api/token/`
-- Body → raw → JSON:
+**Step 1: log in.** `POST http://127.0.0.1:8000/api/token/`, Body → raw → JSON:
 
 ```json
 {
@@ -860,16 +808,9 @@ Restart the server if it isn't running (`python manage.py runserver`).
 }
 ```
 
-The response has two tokens:
+You get back `"refresh"` and `"access"` tokens.
 
-```json
-{
-    "refresh": "eyJhbGciOiJIUzI1NiIs...",
-    "access": "eyJhbGciOiJIUzI1NiIs..."
-}
-```
-
-**Step 2: use the access token.** In every other request, open the **Authorization** tab, choose **Bearer Token** and paste the `access` value. Postman then sends the header `Authorization: Bearer eyJhbGci...` for you.
+**Step 2: use the token.** In every other request: **Authorization** tab → **Bearer Token** → paste the `access` value.
 
 **Step 3: try these requests**
 
@@ -887,10 +828,7 @@ The response has two tokens:
 | admin | `POST /api/departments/` | `{"name": "Neurology"}` | 201 Created |
 | *(no token)* | `GET /api/patients/` | | 401 Unauthorized |
 
-**Step 4: when the access token expires** (after 5 minutes you get 401 *"Token is invalid or expired"*):
-
-- `POST http://127.0.0.1:8000/api/token/refresh/` with body `{"refresh": "<your refresh token>"}`
-- You get a new `access` token. Paste it into the Bearer Token box again.
+**Step 4: token expired?** (401 *"Token is invalid or expired"* after 5 minutes) `POST /api/token/refresh/` with `{"refresh": "<your refresh token>"}` and paste the new `access` token.
 
 > [!REMEMBER] Status codes to say in the interview
 > **200** OK · **201** Created · **204** Deleted (No Content) · **400** validation error · **401** not logged in / bad token · **403** logged in but not allowed · **404** not found (or not yours)
@@ -1116,44 +1054,24 @@ def cancel_appointment(request, id):
     return redirect('appointment_list')
 ```
 
-**What each part does**
+**In one line:** every view follows the same pattern: **check the role → GET shows the page → POST saves and redirects.**
 
-**Login and logout** (same as your Authentication notes)
-- `AuthenticationForm` is Django's ready-made login form. It has username and password fields and checks the password for you.
-- `form.is_valid()` is `True` only if the username and password are correct. Then `login(request, user)` saves the user in the session (a cookie), so every later page knows who you are.
-- `logout(request)` clears the session.
+| View | What it does |
+|---|---|
+| `login_view` / `logout_view` | `AuthenticationForm` checks the password, `login()` saves the user in a cookie, `logout()` clears it |
+| `dashboard` | Counts rows with `.count()` and lists today's appointments |
+| `patient_list` | Lists patients; `?search=` filters by name |
+| `add_patient` / `edit_patient` | Read each input with `request.POST.get('name')`, then `create(...)` or `.save()` |
+| `delete_patient` / `cancel_appointment` | Only act on POST, so a page refresh can't delete anything |
+| `appointment_list` | Lists appointments; a doctor sees only theirs |
+| `add_appointment` | Blocks past dates and double booking, otherwise creates the row |
+| `complete_appointment` | Saves notes and sets status to `completed` (own appointments only) |
 
-**`@login_required(login_url='login')`**
-- Put it above a view to protect it. If nobody is logged in, Django redirects to the URL named `'login'` instead of showing the page.
-
-**dashboard**
-- `.count()` returns how many rows there are, for the summary numbers.
-- `filter(date=date.today())` returns only today's appointments. A doctor sees only theirs.
-- `context` is a dictionary. Every key becomes a variable you can use in the template, like `{{ total_patients }}`.
-
-**patient_list**
-- `request.GET.get('search', '')` reads `?search=...` from the URL (from the search box). The `''` is the default when it's missing.
-- `can_edit` is `True` for admin and receptionist. The template uses it to hide the Add, Edit and Delete buttons from doctors.
-
-**add_patient / edit_patient**
-- The first `if` blocks doctors: they are sent back to the list.
-- A **GET** request just shows the empty form (add) or the filled form (edit).
-- A **POST** request (form submitted) reads each input with `request.POST.get('<input name>')`, saves, then redirects to the list.
-- `Patient.objects.create(...)` makes and saves a new row in one step. For edit, we change the fields of the existing object and call `.save()`.
-- `get_object_or_404(Patient, id=id)` returns the patient, or shows a 404 page if that id doesn't exist.
-
-**delete_patient / cancel_appointment**
-- They only delete or cancel on **POST** (a button inside a form with `{% csrf_token %}`). Then a random link or a page refresh can't delete data by accident.
-
-**add_appointment**
-- `patient_id=` and `doctor_id=` save the foreign key using the id number that came from the dropdown.
-- The **double-booking check** is the same rule as the serializer's `validate()`, but written by hand: look for an existing scheduled appointment with the same doctor, date and time.
-- `appointment_date < str(date.today())` works because dates in `YYYY-MM-DD` text form sort correctly as text.
-- If something is wrong, we put the message in `error` and show the form again. Nothing is saved.
-
-**complete_appointment**
-- GET shows a page with a notes box. POST saves the notes and sets `status` to `'completed'`.
-- `appointment.doctor.user != request.user` stops Dr. Mehta from completing Dr. Rao's appointments.
+Words you'll see in every view:
+- `@login_required(login_url='login')` → not logged in? Go to the login page.
+- `context` → a dictionary sent to the template. `{'patients': ...}` becomes `{{ patients }}`.
+- `get_object_or_404(Patient, id=id)` → the row, or a 404 page.
+- `can_edit` → `True` for admin and receptionist. Templates use it to hide buttons from doctors.
 
 ## 14. hospitalapp/urls.py (web URLs)
 
@@ -1180,10 +1098,7 @@ urlpatterns = [
 ]
 ```
 
-**What it does**
-- Each `path('url/', view_function, name='...')` connects a URL to a view.
-- `<int:id>` takes the number from the URL, for example `/patients/edit/3/`, and passes it to the view as `id=3`.
-- `name='patient_list'` lets you write `redirect('patient_list')` in views and `{% url 'patient_list' %}` in templates, instead of typing the path by hand.
+**In one line:** each `path(...)` connects a URL to a view. `<int:id>` passes the number from `/patients/edit/3/` as `id=3`, and `name=` is what `redirect()` and `{% url %}` use.
 
 ## 15. Final project urls.py
 
@@ -1221,13 +1136,22 @@ urlpatterns = [
 ]
 ```
 
-**What it does**
-- `path('', include('hospitalapp.urls'))` hands every other URL (`/`, `/login/`, `/patients/`...) to the app's `urls.py` from Step 14.
-- It goes **last**, so `/admin/` and `/api/` are matched first.
+**In one line:** the new last line sends every other URL (`/`, `/login/`, `/patients/`...) to the app's `urls.py`. It goes last so `/admin/` and `/api/` match first.
 
 ## 16. Templates
 
-All HTML files go in the `templates/` folder next to `manage.py` (the folder from Step 1). Every page **extends** one base page, so the menu and styles are written only once.
+All HTML files go in the `templates/` folder next to `manage.py`. Every page **extends** `base.html`, so the menu is written once.
+
+**Template words you'll see on every page**
+
+| Tag | Meaning |
+|---|---|
+| `{% extends 'base.html' %}` + `{% block content %}` | Use the base layout and fill its empty slot |
+| `{{ patient.name }}` | Print a value from the view's `context` |
+| `{% for ... %}` / `{% if ... %}` | Loop / condition |
+| `{% url 'edit_patient' patient.id %}` | Build a URL from its name → `/patients/edit/3/` |
+| `{% csrf_token %}` | **Required in every POST form**, or you get 403 CSRF failed |
+| `get_status_display` | Show the choice's label ("Scheduled") instead of the stored value |
 
 ### base.html
 
@@ -1277,12 +1201,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 </html>
 ```
 
-**What it does**
-- This is the **layout** shared by every page: the top menu plus a white box in the middle.
-- `{% block content %}{% endblock %}` is an empty slot. Each page fills it with its own HTML.
-- `user` is always available in templates. `user.is_authenticated` hides the menu links when nobody is logged in. `user.is_superuser` shows the Admin Panel link only to the admin.
-- `{% url 'dashboard' %}` turns a URL **name** from Step 14 into the real path (`/`).
-- The `<style>` block is plain CSS so the pages don't look bare. You can skip it in a hurry.
+**In one line:** the shared layout: menu on top, each page's content below. `user` is always available, so the menu hides links when nobody is logged in. Skip the `<style>` block if you're in a hurry.
 
 ### login.html
 
@@ -1299,10 +1218,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- `{% extends 'base.html' %}` means "use base.html and put my `content` block into its slot".
-- `{{ form.as_p }}` prints the `AuthenticationForm` from the view: username and password inputs, plus an error if the login is wrong.
-- `{% csrf_token %}` is **required in every POST form**. It adds a hidden security code. Without it Django returns **403 CSRF verification failed**.
+**In one line:** `{{ form.as_p }}` prints the username and password boxes (and the error if the login is wrong).
 
 ### dashboard.html
 
@@ -1344,11 +1260,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- `{{ total_patients }}` prints the values from the view's `context` dictionary.
-- `{% for appointment in todays_appointments %}` loops over the rows.
-- `appointment.patient.name` follows the foreign key to the patient and prints the name.
-- `get_status_display` prints the **label** of a choice ("Scheduled") instead of the stored value ("scheduled"). Django creates `get_<field>_display` for every field with `choices`.
+**In one line:** four count boxes, then a table of today's appointments. `appointment.patient.name` follows the foreign key to the patient's name.
 
 ### patient_list.html
 
@@ -1403,12 +1315,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- The search form uses **GET**, so the search text ends up in the URL (`/patients/?search=amit`). The view reads it with `request.GET.get('search')`.
-- `value="{{ search }}"` keeps the typed text in the box after searching.
-- `{% if can_edit %}` hides the Add, Edit and Delete buttons from doctors.
-- `{% url 'edit_patient' patient.id %}` builds `/patients/edit/3/`. The second value fills the `<int:id>` part.
-- Delete is a small **POST form** with `{% csrf_token %}`. `confirm(...)` shows a browser "Are you sure?" popup first.
+**In one line:** a GET search box (`/patients/?search=amit`), a table of patients, and Edit/Delete buttons that only show when `can_edit` is true. Delete is a small POST form with an "Are you sure?" popup.
 
 ### add_patient.html
 
@@ -1457,11 +1364,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- Every input has a `name` that **matches** `request.POST.get('name')`, `request.POST.get('age')` and so on in the view. If the names don't match, the view gets `None`.
-- `<option value="male">` must use the **value** from `GENDER_CHOICES` in the model (`'male'`, not `'Male'`).
-- `required`, `min`, `max` and `maxlength` are browser checks, so the user can't submit an empty name or an age of 500.
-- `method="POST"` with no `action` sends the form back to the same URL, `/patients/add/`.
+**In one line:** each input's `name="..."` must match `request.POST.get('...')` in the view, and each `<option value>` must be the stored choice value (`'male'`, not `'Male'`).
 
 ### edit_patient.html
 
@@ -1510,10 +1413,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- It's the same form as Add, but every input starts **filled in** with the current values (`value="{{ patient.name }}"`).
-- `{% if patient.gender == 'male' %}selected{% endif %}` pre-selects the saved option in the dropdown.
-- A `<textarea>` has no `value` attribute. The text goes **between** the tags.
+**In one line:** the Add form again, but filled in: `value="{{ patient.name }}"` for inputs, `selected` for dropdowns, and the text between the `<textarea>` tags.
 
 ### appointment_list.html
 
@@ -1577,10 +1477,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- The filter links add `?status=...` to the URL. The view reads it with `request.GET.get('status')`.
-- The **Complete** and **Cancel** actions only show while the appointment is still `scheduled`.
-- **Cancel** is a POST form (it changes data). **Complete** is a normal link because it opens a page with a notes box first.
+**In one line:** filter links add `?status=...`, and **Complete** / **Cancel** only show while the appointment is still scheduled.
 
 ### add_appointment.html
 
@@ -1625,11 +1522,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- The dropdowns are built with a `{% for %}` loop over the `patients` and `doctors` the view sent.
-- `value="{{ patient.id }}"` means the form sends the **id**. The view saves it with `patient_id=...`.
-- `type="date"` and `type="time"` show a date picker and a time picker. They send text like `2030-01-15` and `10:30`.
-- `{% if error %}` shows the double-booking or past-date message from the view.
+**In one line:** dropdowns send the patient and doctor **id**, date/time pickers send `2030-01-15` and `10:30`, and `{% if error %}` shows the view's error message.
 
 ### complete_appointment.html
 
@@ -1653,9 +1546,7 @@ All HTML files go in the `templates/` folder next to `manage.py` (the folder fro
 {% endblock %}
 ```
 
-**What it does**
-- Shows the appointment details, then a notes box.
-- Submitting sends POST to the same URL. The view saves `notes` and sets the status to `completed`.
+**In one line:** shows the appointment, then a notes box. Submitting saves the notes and marks it completed.
 
 ## 17. Run and check everything
 
@@ -1721,6 +1612,7 @@ Response | 201 Created + the appointment as JSON
 | `CSRF verification failed` (403) | A POST form without `{% csrf_token %}` | Add `{% csrf_token %}` inside the `<form>` |
 | Postman: *Authentication credentials were not provided* | No token, or the `REST_FRAMEWORK` block is missing | Use Bearer Token in Postman, and check Step 11 |
 | Postman: *Token is invalid or expired* | The access token is older than 5 minutes | Call `/api/token/refresh/` or log in again |
+| ``Field name `phone` is not valid for model `Doctor` `` | A name in the serializer's `fields` list doesn't match the model (e.g. the model says `phone_number`) | Use the exact model field name in `fields`, and rename `validate_phone` to match |
 | `basename` argument not specified | A viewset has `get_queryset` but no `queryset` | Add `basename='...'` to `router.register` |
 | Doctor gets 404 for an appointment | That appointment belongs to another doctor | This is correct, because `get_queryset` hides it |
 | `Invalid pk "5" - object does not exist.` | You sent a `patient` or `doctor` id that isn't in the database | `GET /api/patients/` first and use a real id |
