@@ -522,6 +522,29 @@ class StockTransactionSerializer(serializers.ModelSerializer):
         return data
 ```
 
+### `class Meta`, explained slowly
+
+Every serializer above has a small class **inside** it called `Meta`:
+
+```python
+class PatientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Patient
+        fields = ['id', 'name', 'age']
+```
+
+`Meta` is just a **settings box** for the class around it. It doesn't make fields itself. It answers two questions for `ModelSerializer`:
+
+| Line | Question it answers |
+|---|---|
+| `model = Patient` | "Which model should I copy the fields from?" |
+| `fields = [...]` | "Which of those fields should I include in the JSON?" |
+| `read_only_fields = [...]` *(optional)* | "Which fields can be shown but never sent by the client?" |
+
+Without `Meta`, `ModelSerializer` doesn't know which table you mean, and Django raises an error. The name must be exactly `Meta`, with a capital M and indented **inside** the serializer class.
+
+You have already seen the same idea in a `ModelForm`, which also uses `class Meta: model = ... fields = ...`. Models can have a `Meta` too (for example `class Meta: ordering = ['name']`). The idea is always the same: **`Meta` holds settings about the class, not data.**
+
 **What it does**
 
 - **`ModelSerializer`** builds the fields from the model for you, just like `ModelForm` does for forms. `Meta.model` says which model. `Meta.fields` lists which columns appear in the JSON.
@@ -1687,6 +1710,7 @@ Response | 201 Created + the transaction as JSON
 
 | Question | Short answer |
 |---|---|
+| What is `class Meta`? | A settings box inside the serializer: `model` says which model to copy fields from, `fields` says which to include. |
 | What is a serializer? | It converts model objects to JSON and back, and validates input. It's like a ModelForm for APIs. |
 | `read_only_fields` vs `write_only=True`? | Read-only: shown in responses but can't be sent (quantity). Write-only: can be sent but is never shown (password). |
 | Why override `create()` in RegisterSerializer? | So the password is hashed with `create_user()`. A plain save would store it as text and login would fail. |
