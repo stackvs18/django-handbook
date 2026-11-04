@@ -376,9 +376,13 @@ async function render(source: string): Promise<RenderedChapter> {
 }
 
 export async function renderChapter(slug: string): Promise<RenderedChapter> {
-  const file = chapterPath(slug);
+  return renderMarkdownFile(chapterPath(slug));
+}
+
+/** Render any markdown file (absolute path) with the same pipeline as chapters. */
+export async function renderMarkdownFile(file: string): Promise<RenderedChapter> {
   const { mtimeMs } = await fs.stat(file);
-  const key = `${slug}@${mtimeMs}`;
+  const key = `${file}@${mtimeMs}`;
   let entry = cache.get(key);
   if (!entry) {
     entry = fs.readFile(file, "utf8").then(render);

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Check } from "lucide-react";
 import { PARTS, CHAPTERS } from "@/lib/chapters";
 import { useDoneChapters } from "@/lib/progress";
+import { PROJECTS } from "@/lib/projects";
 
 const NUMBER = new Map(CHAPTERS.map((c) => [c.slug, c.number]));
 
@@ -19,6 +20,34 @@ export function ChapterNav({ onNavigate }: { onNavigate?: () => void }) {
         <span className="font-mono text-[0.7rem] text-faint">
           {done.length}/{CHAPTERS.length}
         </span>
+      </div>
+      <div className="mb-7">
+        <p className="mb-2 px-3 font-mono text-[0.68rem] uppercase tracking-[0.14em] text-faint">
+          <Link href="/project" onClick={onNavigate} className="hover:text-fg">
+            Practical projects
+          </Link>
+        </p>
+        <ul>
+          {PROJECTS.map((project) => {
+            const href = `/project/${project.slug}`;
+            const active = pathname === href;
+            return (
+              <li key={project.slug}>
+                <Link
+                  href={href}
+                  onClick={onNavigate}
+                  aria-current={active ? "page" : undefined}
+                  className={`flex items-start gap-3 rounded-md px-3 py-[0.4rem] leading-snug transition-colors ${
+                    active ? "bg-hover text-fg" : "text-muted hover:bg-hover/60 hover:text-fg"
+                  }`}
+                >
+                  <span className="mt-[0.2rem] w-5 shrink-0 font-mono text-[0.68rem] text-faint">▸</span>
+                  <span className="flex-1">{project.title}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
       </div>
       {PARTS.map((part, pi) => (
         <div key={part.id} className="mb-7">

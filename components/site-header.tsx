@@ -70,6 +70,9 @@ export function SiteHeader() {
             <Link href="/labs" className="nav-link">
               Live labs
             </Link>
+            <Link href="/project" className="nav-link">
+              Projects
+            </Link>
             <Link href="/learn/cheatsheet" className="nav-link">
               Cheat sheet
             </Link>
