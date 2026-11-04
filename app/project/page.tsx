@@ -17,8 +17,9 @@ export default function ProjectsPage() {
         Build a full system, file by file.
       </h1>
       <p className="mt-6 max-w-[62ch] text-lg leading-relaxed text-muted">
-        Two interview-style practical projects. Each one starts at an empty folder and ends with a working REST API
-        (serializers, viewsets, JWT, permissions, filters) and a server-rendered dashboard. Every file has a copy button.
+        Two interview-style practical projects, written at beginner level in the same style as class notes. Each one
+        starts at an empty folder and ends with a working REST API (serializers, viewsets, JWT, permissions) and simple
+        Django web pages. Every file has a copy button and a short note on what it does.
       </p>
 
       <div className="mt-12 grid gap-4 sm:grid-cols-2">

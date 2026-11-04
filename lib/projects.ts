@@ -11,17 +11,17 @@ export const PROJECTS: Project[] = [
     slug: "hospital",
     title: "Hospital Management System",
     summary:
-      "Departments, doctors, patients, appointments and prescriptions. A REST API with JWT login, role-based permissions, double-booking checks, plus a server-rendered dashboard.",
-    stack: ["Django", "DRF", "SimpleJWT", "django-filter", "Templates"],
-    level: "Easy → Hard",
+      "Departments, doctors, receptionists, patients and appointments. Beginner-level: plain models, ModelViewSet API with JWT and three roles, a double-booking check, and simple function-based web pages.",
+    stack: ["Django", "DRF", "SimpleJWT", "Templates"],
+    level: "Beginner",
   },
   {
     slug: "inventory",
     title: "Inventory Management System",
     summary:
-      "Categories, suppliers, products, stock in/out movements and purchase orders. Atomic stock updates, low-stock alerts, stock value reports, JWT auth and a dashboard.",
-    stack: ["Django", "DRF", "SimpleJWT", "django-filter", "Templates"],
-    level: "Easy → Hard",
+      "Categories, suppliers, products and stock in/out. Beginner-level: register + JWT login, staff-only editing, stock that can never go negative, low-stock alerts and simple web pages.",
+    stack: ["Django", "DRF", "SimpleJWT", "Templates"],
+    level: "Beginner",
   },
 ];
 

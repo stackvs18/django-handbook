@@ -1,1932 +1,1614 @@
-You will build a **Hospital Management System (HMS)** from an empty folder. You get a REST API with JWT login, three user roles, and a server-rendered dashboard. Every file is shown in full. Click **Copy** on a block and paste it into VS Code.
+You will build a **Hospital Management System** step by step, the same way you built the Player project in class:
+
+**project → app → settings → models → migrations → admin → serializers → viewsets → router → JWT → Postman → web pages**
+
+Every file is shown **in full**. Click **Copy**, paste it into VS Code, save. After every block there is a short note on **what the code does** and **how it is used**, so you can explain it to the interviewer.
 
 > [!TIP] How to use this page in a practical test
-> Go top to bottom. Each step ends with something you can run, so you always have a working project. If time runs out, stop at the end of any step and you still have something to show. Steps 1–8 are the **must-haves**. Steps 9 onward are the **extras** that make you stand out.
+> Go top to bottom. Every step ends with something you can run.
+> - **Part A (Steps 1–6):** project, models, admin. You can already add data in `/admin/`.
+> - **Part B (Steps 7–12):** REST API with serializers, viewsets, router, JWT and roles. Test it in Postman.
+> - **Part C (Steps 13–17):** normal Django web pages (MVT) with login, patients and appointments.
+>
+> If the test only asks for an API, stop after Part B. If it only asks for web pages, do Part A and then Part C.
 
-> [!NOTE] Where the design comes from
-> The shape follows typical open-source Django hospital apps (for example [hamzaezzine/Hospital-Management](https://github.com/hamzaezzine/Hospital-Management): users with a doctor flag, a Doctor profile linked one-to-one to a User, specialties, and appointments with a status and a time slot). It's simplified to intern-practical level. Instead of separate `Status` and `Time` tables we use `TextChoices` and a slot generator. We left out blogs, comments and image uploads. We added a REST API, JWT, roles, prescriptions and double-booking checks.
+> [!NOTE] Where the idea comes from
+> Open-source hospital apps (for example [hamzaezzine/Hospital-Management](https://github.com/hamzaezzine/Hospital-Management)) have doctors linked to user accounts, departments, patients and appointments with a status. We kept only those basic ideas and wrote everything in the simple style from class: plain `models.Model`, choices written by hand, function-based web views and `ModelViewSet` for the API.
 
-## 0. Game plan for the practical
+## 0. What we're building
 
-| Time | Step | You can show |
+**Who uses the system**
+
+| Role | How we know the role | Can do |
 |---|---|---|
-| 0–10 min | Setup, settings, custom user | `runserver` works |
-| 10–25 min | Models, migrations, admin | Data entry in `/admin/` |
-| 25–50 min | Serializers + ViewSets + URLs | Full CRUD API in the browser |
-| 50–65 min | JWT login + role permissions | Postman login with `Bearer` token |
-| 65–80 min | Business rules (double booking, cancel/complete) | Real validation errors |
-| 80–100 min | Dashboard stats, seed data, templates | A UI plus numbers |
-| 100+ min | Tests | `python manage.py test` passes |
+| **Admin** | Django superuser (`createsuperuser`) | Everything, including departments and doctors |
+| **Receptionist** | Their user is linked to a row in the `Receptionist` table | Add, edit and delete patients. Book and cancel appointments |
+| **Doctor** | Their user is linked to a row in the `Doctor` table | See **only their own** appointments, write notes, mark them completed |
 
-**What the examiner usually checks:** models and relationships, CRUD API, validation, authentication, permissions, filtering/search/pagination, and whether you can **explain** your code. Section 15 covers the explaining part.
-
-## 1. What we're building
-
-**Roles**
-
-| Role | Can do |
-|---|---|
-| **Admin** | Everything: departments, doctors, staff accounts |
-| **Receptionist** | Register patients, book / cancel appointments |
-| **Doctor** | See **only their own** appointments, write prescriptions, mark appointments complete |
-
-**Data model**
+**Tables (models)**
 
 ```flow
-Department | has many Doctors (Cardiology, Orthopedics…)
-Doctor | one-to-one with a User account, belongs to a Department
-Patient | personal details, blood group, age computed from DOB
-Appointment | Patient + Doctor + date + time, status: Scheduled / Completed / Cancelled
-Prescription | one-to-one with an Appointment: diagnosis, medicines, advice
+Department | Cardiology, Orthopedics… one department has many doctors
+Doctor | name, specialization, fee… optionally linked to a login user
+Receptionist | name, phone, shift… linked to a login user
+Patient | name, age, gender, phone, blood group
+Appointment | patient + doctor + date + time, status: scheduled / completed / cancelled
 ```
 
-**API endpoints**
+**API endpoints you will have at the end of Part B**
 
 | Method | URL | What it does |
 |---|---|---|
-| POST | `/api/auth/login/` | Get JWT `access` + `refresh` tokens |
-| POST | `/api/auth/refresh/` | Get a new access token |
-| POST | `/api/auth/logout/` | Blacklist the refresh token |
-| POST | `/api/auth/register/` | Admin creates a staff account |
-| GET/PATCH | `/api/auth/me/` | Current user's profile |
-| CRUD | `/api/departments/` | Departments with a doctor count |
-| CRUD | `/api/doctors/` | Doctors (filter by department, availability) |
-| GET | `/api/doctors/{id}/schedule/?date=YYYY-MM-DD` | Booked and free slots for a day |
-| CRUD | `/api/patients/` | Patients (search, filter, order) |
-| GET | `/api/patients/{id}/history/` | All visits with prescriptions |
-| CRUD | `/api/appointments/` | Appointments (double booking is blocked) |
-| GET | `/api/appointments/today/` | Today's appointments |
-| POST | `/api/appointments/{id}/cancel/` | Cancel |
-| POST | `/api/appointments/{id}/complete/` | Mark completed (doctor) |
-| CRUD | `/api/prescriptions/` | Prescriptions (doctor writes) |
-| GET | `/api/dashboard/` | Counts, revenue, busiest doctors |
+| POST | `/api/token/` | Log in and get JWT `access` + `refresh` tokens |
+| POST | `/api/token/refresh/` | Get a new access token |
+| GET / POST | `/api/departments/` | List / create departments |
+| GET / POST | `/api/doctors/` | List / create doctors |
+| GET / POST | `/api/patients/` | List / create patients (`?search=name`) |
+| GET / POST | `/api/appointments/` | List / book appointments (`?status=scheduled`) |
+| GET / PUT / PATCH / DELETE | `/api/<name>/<id>/` | One record: read, update, delete |
 
-## 2. Project setup
+## 1. Install packages and create the project
 
-Open an empty folder in VS Code, then open the terminal (`` Ctrl+` ``).
+Open an empty folder in VS Code and open the terminal (`` Ctrl+` ``). Make a virtual environment and install three packages:
 
 ```bash
-mkdir hospital-management
-cd hospital-management
 python -m venv venv
 venv\Scripts\activate
+pip install django djangorestframework djangorestframework-simplejwt
 ```
+
+**What it does**
+- `python -m venv venv` creates a private Python folder called `venv` just for this project.
+- `venv\Scripts\activate` switches the terminal to use it. You will see `(venv)` at the start of the line.
+- `pip install` downloads the packages into that venv.
+
+| Package | Why we need it |
+|---|---|
+| `django` | The web framework |
+| `djangorestframework` | DRF: serializers, viewsets, routers, the browsable API |
+| `djangorestframework-simplejwt` | JWT login (`access` and `refresh` tokens) |
 
 > [!NOTE]
-> On macOS or Linux, activate with `source venv/bin/activate`. In PowerShell, if activation is blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+> On macOS or Linux, activate with `source venv/bin/activate`. If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try again.
 
-Install everything we need:
-
-```bash
-pip install "django>=5.2,<6" djangorestframework djangorestframework-simplejwt django-filter
-```
-
-| Package | Why |
-|---|---|
-| `django` | The framework |
-| `djangorestframework` | DRF: serializers, viewsets, routers, the browsable API |
-| `djangorestframework-simplejwt` | JWT login (`access` / `refresh` tokens) |
-| `django-filter` | `?status=SCHEDULED&doctor=2` style filtering |
-
-Create the project and two apps:
+Now create the project and the app:
 
 ```bash
-django-admin startproject hms .
-python manage.py startapp accounts
-python manage.py startapp hospital
+django-admin startproject hospitalproject
+cd hospitalproject
+python manage.py startapp hospitalapp
+mkdir templates
 ```
 
-The `.` at the end means "create the project in this folder", so you avoid a `hms/hms/` double folder. `accounts` holds users and login. `hospital` holds everything else.
+**What it does**
+- `startproject hospitalproject` creates the project folder with `manage.py` and the settings package.
+- `cd hospitalproject` moves into it. **Run every command from here on inside this folder** (the one that has `manage.py`).
+- `startapp hospitalapp` creates our app. All models, views and serializers go in here.
+- `mkdir templates` creates one folder for all HTML files. We tell Django about it in Step 2.
 
-Final structure (we'll create the extra files as we go):
+Your folder now looks like this. The files marked *new* are ones you will create yourself later:
 
 ```text
-hospital-management/
+hospitalproject/              ← you are here (has manage.py)
 ├── manage.py
-├── hms/                    ← project config
+├── templates/                ← all HTML files (Part C)
+├── hospitalproject/          ← project settings
 │   ├── settings.py
 │   └── urls.py
-├── accounts/               ← custom User, JWT login, permissions
-│   ├── models.py  admin.py  serializers.py  permissions.py  views.py  urls.py
-├── hospital/               ← the domain
-│   ├── models.py  admin.py  serializers.py  views.py  urls.py
-│   ├── forms.py  web_views.py  web_urls.py  tests.py
-│   └── management/commands/seed.py
-└── templates/
-    ├── base.html
-    ├── registration/login.html
-    └── hospital/*.html
+└── hospitalapp/              ← our app
+    ├── models.py
+    ├── admin.py
+    ├── serializers.py        ← new (Part B)
+    ├── permissions.py        ← new (Part B)
+    ├── api_views.py          ← new (Part B)
+    ├── views.py              ← web pages (Part C)
+    └── urls.py               ← new (Part C)
 ```
 
-## 3. settings.py
+## 2. settings.py (only two changes)
 
-Open `hms/settings.py`. Replace the whole `INSTALLED_APPS` list with:
+Open `hospitalproject/settings.py`. You change **only two things** here: `INSTALLED_APPS` and the templates folder. Leave everything else (database, time zone, middleware) exactly as Django created it.
 
-```python title="hms/settings.py — INSTALLED_APPS"
+**Change 1.** Find `INSTALLED_APPS` and add the two marked lines:
+
+```python title="hospitalproject/settings.py — INSTALLED_APPS"
 INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    # third party
-    "rest_framework",
-    "rest_framework_simplejwt.token_blacklist",
-    "django_filters",
-    # our apps
-    "accounts",
-    "hospital",
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',   # <--- ADDED (Django REST Framework)
+    'hospitalapp',      # <--- ADDED (our app)
 ]
 ```
 
-In the `TEMPLATES` setting, change the `DIRS` line so Django finds our project-level `templates/` folder:
+**What it does**
+- `INSTALLED_APPS` is the list of apps Django loads.
+- `'rest_framework'` turns on DRF. It also gives us the browsable API pages and the `api-auth/` login page.
+- `'hospitalapp'` tells Django our app exists. Without it, `makemigrations` will not see your models.
 
-```python title="hms/settings.py — inside TEMPLATES"
-        "DIRS": [BASE_DIR / "templates"],
+**Change 2.** Find `TEMPLATES` and change `'DIRS': []` to the line below:
+
+```python title="hospitalproject/settings.py — TEMPLATES"
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [BASE_DIR / 'templates'],   # <--- CHANGED (was [])
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
 ```
 
-Change the time zone (find the existing `TIME_ZONE` line):
+**What it does**
+- `DIRS` is the list of extra folders where Django looks for HTML files.
+- `BASE_DIR` is the folder that has `manage.py`, so `BASE_DIR / 'templates'` points to the `templates` folder we just made.
+- Now `render(request, 'dashboard.html')` will find `templates/dashboard.html`.
 
-```python title="hms/settings.py — TIME_ZONE"
-TIME_ZONE = "Asia/Kolkata"
-```
+> [!NOTE] What about the big REST_FRAMEWORK block?
+> You don't need a block of extra settings for pagination, filters, time zone or login URLs. The defaults are fine. There is **one** small extra block you do need, and it comes in **Step 11** when we switch on JWT. That step explains why.
 
-Paste this at the **bottom** of the file:
+## 3. models.py
 
-```python title="hms/settings.py — add at the bottom"
-from datetime import timedelta
+Open `hospitalapp/models.py` and replace everything with:
 
-# Use our own User model (must be set BEFORE the first migrate)
-AUTH_USER_MODEL = "accounts.User"
-
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",  # lets the browsable API use your admin login
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
-    ],
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-        "rest_framework.filters.SearchFilter",
-        "rest_framework.filters.OrderingFilter",
-    ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "PAGE_SIZE": 10,
-}
-
-SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
-    "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": True,
-    "AUTH_HEADER_TYPES": ("Bearer",),
-}
-
-# Template (MVT) side: where login sends you
-LOGIN_URL = "login"
-LOGIN_REDIRECT_URL = "dashboard"
-LOGOUT_REDIRECT_URL = "login"
-```
-
-> [!IMPORTANT] Why these settings matter
-> `DEFAULT_PERMISSION_CLASSES = IsAuthenticated` means **every API endpoint needs login unless we say otherwise**. That's the "secure by default" answer interviewers like. `DEFAULT_FILTER_BACKENDS` gives every ViewSet `?search=`, `?ordering=` and field filters for free.
-
-## 4. Custom User model (do this before migrate)
-
-We need a `role` on each user. The clean way is a custom user model that extends Django's `AbstractUser`.
-
-> [!WARNING]
-> Create the custom user **before** you run `migrate` for the first time. Changing `AUTH_USER_MODEL` later means deleting the database and all migrations.
-
-```python title="accounts/models.py"
-from django.contrib.auth.models import AbstractUser
+```python title="hospitalapp/models.py"
 from django.db import models
-
-
-class User(AbstractUser):
-    """Django's built-in user + a role and phone number."""
-
-    class Role(models.TextChoices):
-        ADMIN = "ADMIN", "Admin"
-        DOCTOR = "DOCTOR", "Doctor"
-        RECEPTIONIST = "RECEPTIONIST", "Receptionist"
-
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.RECEPTIONIST)
-    phone = models.CharField(max_length=15, blank=True)
-
-    @property
-    def is_admin_role(self):
-        return self.is_superuser or self.role == self.Role.ADMIN
-
-    @property
-    def is_doctor(self):
-        return self.role == self.Role.DOCTOR
-
-    @property
-    def is_receptionist(self):
-        return self.role == self.Role.RECEPTIONIST
-```
-
-```python title="accounts/admin.py"
-from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin
-
-from .models import User
-
-
-@admin.register(User)
-class CustomUserAdmin(UserAdmin):
-    list_display = ("username", "first_name", "last_name", "email", "role", "is_active")
-    list_filter = ("role", "is_active", "is_staff")
-    fieldsets = UserAdmin.fieldsets + (("Hospital", {"fields": ("role", "phone")}),)
-    add_fieldsets = UserAdmin.add_fieldsets + (("Hospital", {"fields": ("role", "phone", "first_name", "last_name")}),)
-```
-
-## 5. Hospital models
-
-This file holds the core of the project: five models, their relationships, choices, and a few helper methods.
-
-```python title="hospital/models.py"
-import datetime as dt
-
-from django.conf import settings
-from django.db import models
-from django.utils import timezone
+from django.contrib.auth.models import User
 
 
 class Department(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["name"]
 
     def __str__(self):
         return self.name
 
 
 class Doctor(models.Model):
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="doctor_profile"
-    )
-    department = models.ForeignKey(Department, on_delete=models.PROTECT, related_name="doctors")
+    # Login account of the doctor. Optional: a doctor can exist without logging in.
+    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True)
+    name = models.CharField(max_length=100)
+    department = models.ForeignKey(Department, on_delete=models.CASCADE)
     specialization = models.CharField(max_length=100)
     phone = models.CharField(max_length=15)
-    consultation_fee = models.DecimalField(max_digits=8, decimal_places=2, default=500)
-    is_available = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["user__first_name"]
+    email = models.EmailField(blank=True)
+    fee = models.IntegerField(default=500)
 
     def __str__(self):
-        return f"Dr. {self.user.get_full_name() or self.user.username}"
+        return 'Dr. ' + self.name
 
-    def free_slots(self, day):
-        """All 30-minute slots in working hours that are not booked on `day`."""
-        booked = set(
-            self.appointments.filter(date=day)
-            .exclude(status=Appointment.Status.CANCELLED)
-            .values_list("time", flat=True)
-        )
-        slots = []
-        current = dt.datetime.combine(day, Appointment.WORK_START)
-        end = dt.datetime.combine(day, Appointment.WORK_END)
-        while current < end:
-            if current.time() not in booked:
-                slots.append(current.strftime("%H:%M"))
-            current += dt.timedelta(minutes=Appointment.SLOT_MINUTES)
-        return slots
+
+class Receptionist(models.Model):
+    SHIFT_CHOICES = [
+        ('morning', 'Morning'),
+        ('evening', 'Evening'),
+        ('night', 'Night'),
+    ]
+
+    # Login account of the receptionist. Required: receptionists always log in.
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=15)
+    shift = models.CharField(max_length=10, choices=SHIFT_CHOICES, default='morning')
+
+    def __str__(self):
+        return self.name
 
 
 class Patient(models.Model):
-    class Gender(models.TextChoices):
-        MALE = "M", "Male"
-        FEMALE = "F", "Female"
-        OTHER = "O", "Other"
+    GENDER_CHOICES = [
+        ('male', 'Male'),
+        ('female', 'Female'),
+        ('other', 'Other'),
+    ]
+    BLOOD_GROUP_CHOICES = [
+        ('A+', 'A+'),
+        ('A-', 'A-'),
+        ('B+', 'B+'),
+        ('B-', 'B-'),
+        ('O+', 'O+'),
+        ('O-', 'O-'),
+        ('AB+', 'AB+'),
+        ('AB-', 'AB-'),
+    ]
 
-    class BloodGroup(models.TextChoices):
-        A_POS = "A+", "A+"
-        A_NEG = "A-", "A-"
-        B_POS = "B+", "B+"
-        B_NEG = "B-", "B-"
-        O_POS = "O+", "O+"
-        O_NEG = "O-", "O-"
-        AB_POS = "AB+", "AB+"
-        AB_NEG = "AB-", "AB-"
-
-    first_name = models.CharField(max_length=50)
-    last_name = models.CharField(max_length=50)
-    gender = models.CharField(max_length=1, choices=Gender.choices)
-    date_of_birth = models.DateField()
-    blood_group = models.CharField(max_length=3, choices=BloodGroup.choices, blank=True)
-    phone = models.CharField(max_length=15, unique=True)
-    email = models.EmailField(blank=True)
+    name = models.CharField(max_length=100)
+    age = models.IntegerField()
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
+    phone = models.CharField(max_length=15)
+    blood_group = models.CharField(max_length=5, choices=BLOOD_GROUP_CHOICES, blank=True)
     address = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        ordering = ["-created_at"]
-
     def __str__(self):
-        return self.full_name
-
-    @property
-    def full_name(self):
-        return f"{self.first_name} {self.last_name}"
-
-    @property
-    def age(self):
-        today = timezone.localdate()
-        dob = self.date_of_birth
-        return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+        return self.name
 
 
 class Appointment(models.Model):
-    class Status(models.TextChoices):
-        SCHEDULED = "SCHEDULED", "Scheduled"
-        COMPLETED = "COMPLETED", "Completed"
-        CANCELLED = "CANCELLED", "Cancelled"
+    STATUS_CHOICES = [
+        ('scheduled', 'Scheduled'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+    ]
 
-    WORK_START = dt.time(9, 0)
-    WORK_END = dt.time(17, 0)
-    SLOT_MINUTES = 30
-
-    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="appointments")
-    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE, related_name="appointments")
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE)
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE)
     date = models.DateField()
     time = models.TimeField()
-    reason = models.CharField(max_length=255)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SCHEDULED)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-date", "-time"]
-        indexes = [models.Index(fields=["doctor", "date"])]
-
-    def __str__(self):
-        return f"{self.patient} with {self.doctor} on {self.date} {self.time:%H:%M}"
-
-    @classmethod
-    def slot_taken(cls, doctor, day, at, exclude_pk=None):
-        """True if the doctor already has a non-cancelled appointment at that date+time."""
-        qs = cls.objects.filter(doctor=doctor, date=day, time=at).exclude(status=cls.Status.CANCELLED)
-        if exclude_pk:
-            qs = qs.exclude(pk=exclude_pk)
-        return qs.exists()
-
-
-class Prescription(models.Model):
-    appointment = models.OneToOneField(
-        Appointment, on_delete=models.CASCADE, related_name="prescription"
-    )
-    diagnosis = models.TextField()
-    medicines = models.TextField(help_text="One per line, e.g. Paracetamol 500mg - 1-0-1 - 5 days")
-    advice = models.TextField(blank=True)
-    follow_up_date = models.DateField(null=True, blank=True)
+    reason = models.CharField(max_length=200)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='scheduled')
+    notes = models.TextField(blank=True)   # the doctor writes diagnosis / medicines here
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Prescription for {self.appointment}"
+        return self.patient.name + ' with Dr. ' + self.doctor.name + ' on ' + str(self.date)
 ```
 
-> [!REMEMBER] Relationship cheat sheet
-> - `ForeignKey`: many-to-one. Many appointments belong to one doctor.
-> - `OneToOneField`: exactly one. One doctor profile per user, one prescription per appointment.
-> - `on_delete=PROTECT`: you **can't** delete a department that still has doctors.
-> - `on_delete=CASCADE`: deleting a patient deletes their appointments.
-> - `on_delete=SET_NULL`: deleting a staff user keeps the appointment and sets `created_by` to NULL.
-> - `related_name="appointments"` lets you write `doctor.appointments.all()`.
+**What it does.** Each class becomes one table in the database. Each line inside a class becomes one column.
 
-Create the tables:
+| Model | What it stores | Links |
+|---|---|---|
+| `Department` | Hospital departments | Has many doctors |
+| `Doctor` | Doctor details | `department` → one Department. `user` → one login account (optional) |
+| `Receptionist` | Front desk staff | `user` → one login account (required) |
+| `Patient` | Patient details | Has many appointments |
+| `Appointment` | One visit | `patient` → one Patient. `doctor` → one Doctor |
+
+**Field types used**
+
+| Field | Meaning |
+|---|---|
+| `CharField(max_length=100)` | Short text. `max_length` is required |
+| `TextField()` | Long text with no limit (address, notes) |
+| `IntegerField()` | Whole number (age, fee) |
+| `EmailField()` | Text that must look like an email |
+| `DateField()` / `TimeField()` | A date like `2030-01-15` / a time like `10:30` |
+| `DateTimeField(auto_now_add=True)` | Filled in automatically when the row is created |
+| `ForeignKey(Department, ...)` | **Many-to-one.** Many doctors belong to one department |
+| `OneToOneField(User, ...)` | **One-to-one.** One user account belongs to exactly one doctor |
+
+**Options used**
+
+- `choices=GENDER_CHOICES` gives a fixed list of allowed values. Each pair is `('value saved in DB', 'Label shown to humans')`. Admin shows a dropdown automatically.
+- `default='scheduled'` means a new appointment is "scheduled" unless you say otherwise.
+- `blank=True` means the field may be left empty in forms and in the API.
+- `null=True` means the database is allowed to store "nothing" (NULL). We need it on `Doctor.user` because a doctor may have no login.
+- `unique=True` means two departments cannot have the same name.
+- `on_delete=models.CASCADE` means: delete the department, and its doctors are deleted too. Delete a patient, and their appointments are deleted too.
+- `on_delete=models.SET_NULL` means: delete the doctor's user account, and the doctor stays but `user` becomes empty.
+- `__str__` is the text Django shows for a row (in admin dropdowns, for example `Dr. Mehta`).
+
+> [!IMPORTANT] Why separate Doctor and Receptionist tables instead of a custom User?
+> Django already has a `User` table with username and password. We **don't** replace it (that would need `AbstractUser`, which is harder). Instead, each role gets its own simple table with a `user` link:
+> - The user is in the `Doctor` table → they are a **doctor**.
+> - The user is in the `Receptionist` table → they are a **receptionist**.
+> - The user is a **superuser** → they are the **admin**. There's no Admin table because Django already marks superusers.
+>
+> This is easy to explain, and it's the same idea as the `Profile` model with a `role` field from your notes.
+
+## 4. Make and run migrations
 
 ```bash
-python manage.py makemigrations accounts hospital
+python manage.py makemigrations
 python manage.py migrate
 ```
 
-## 6. Admin panel
+**What it does**
+- `makemigrations` reads `models.py` and writes a migration file (`hospitalapp/migrations/0001_initial.py`). It's a plan for creating the tables.
+- `migrate` runs that plan on the database (`db.sqlite3`). It also creates Django's built-in tables (users, sessions, admin).
+- **Every time you change `models.py`, run both commands again.**
 
-```python title="hospital/admin.py"
+## 5. admin.py
+
+Open `hospitalapp/admin.py` and replace everything with:
+
+```python title="hospitalapp/admin.py"
 from django.contrib import admin
+from .models import Department, Doctor, Receptionist, Patient, Appointment
 
-from .models import Appointment, Department, Doctor, Patient, Prescription
-
-
-class DoctorInline(admin.TabularInline):
-    model = Doctor
-    extra = 0
-    fields = ("user", "specialization", "consultation_fee", "is_available")
-
-
-@admin.register(Department)
-class DepartmentAdmin(admin.ModelAdmin):
-    list_display = ("name", "created_at")
-    search_fields = ("name",)
-    inlines = [DoctorInline]
-
-
-@admin.register(Doctor)
-class DoctorAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "department", "specialization", "consultation_fee", "is_available")
-    list_filter = ("department", "is_available")
-    list_editable = ("is_available",)
-    search_fields = ("user__first_name", "user__last_name", "specialization")
-    list_select_related = ("user", "department")
-
-
-class AppointmentInline(admin.TabularInline):
-    model = Appointment
-    extra = 0
-    fields = ("doctor", "date", "time", "status", "reason")
-
-
-@admin.register(Patient)
-class PatientAdmin(admin.ModelAdmin):
-    list_display = ("full_name", "gender", "age", "blood_group", "phone", "created_at")
-    list_filter = ("gender", "blood_group")
-    search_fields = ("first_name", "last_name", "phone", "email")
-    inlines = [AppointmentInline]
-
-
-class PrescriptionInline(admin.StackedInline):
-    model = Prescription
-    extra = 0
-
-
-@admin.register(Appointment)
-class AppointmentAdmin(admin.ModelAdmin):
-    list_display = ("patient", "doctor", "date", "time", "status")
-    list_filter = ("status", "date", "doctor")
-    list_editable = ("status",)
-    search_fields = ("patient__first_name", "patient__last_name", "reason")
-    date_hierarchy = "date"
-    list_select_related = ("patient", "doctor__user")
-    inlines = [PrescriptionInline]
-
-
-@admin.register(Prescription)
-class PrescriptionAdmin(admin.ModelAdmin):
-    list_display = ("appointment", "follow_up_date", "created_at")
-    search_fields = ("diagnosis", "appointment__patient__first_name")
+admin.site.register(Department)
+admin.site.register(Doctor)
+admin.site.register(Receptionist)
+admin.site.register(Patient)
+admin.site.register(Appointment)
 ```
+
+**What it does**
+- `admin.site.register(Model)` adds that table to the admin panel at `/admin/`, with add, edit, delete and list pages for free.
+- We use the admin panel to create departments, doctors and staff accounts quickly. Then we don't have to build pages for them.
+
+## 6. Create the admin and some test data
+
+Create the superuser. This account is the **Admin** role:
 
 ```bash
 python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Open <http://127.0.0.1:8000/admin/>, log in, and add a Department. **Checkpoint 1:** the data layer works.
+**What it does**
+- `createsuperuser` asks for a username, email (you can leave it empty) and password. A superuser can do everything.
+- `runserver` starts the site at `http://127.0.0.1:8000/`. Keep this terminal running and open a second terminal for other commands.
 
-## 7. Permissions (who can do what)
+Open `http://127.0.0.1:8000/admin/`, log in, and add this data **in this order** (later rows need earlier ones):
 
-A DRF permission class answers one question: "may this request continue?" `has_permission` runs on every request. `has_object_permission` runs when a single object is fetched.
+1. **Departments** → add `Cardiology` and `Orthopedics`.
+2. **Users** (under Authentication) → add a user `drmehta` with password `Hospital@123`.
+3. **Doctors** → add a doctor: User = `drmehta`, Name = `Mehta`, Department = Cardiology, Specialization = `Heart`, Phone = `9876543210`.
+4. **Doctors** → add a second doctor with **no user**: Name = `Rao`, Department = Orthopedics, Specialization = `Bones`, Phone = `9876543211`.
+5. **Users** → add a user `reception1` with password `Hospital@123`.
+6. **Receptionists** → add one: User = `reception1`, Name = `Priya`, Phone = `9876543212`.
+7. **Patients** → add one or two patients.
 
-```python title="accounts/permissions.py"
-from rest_framework.permissions import SAFE_METHODS, BasePermission
+You now have one login for each role:
 
-# SAFE_METHODS = ("GET", "HEAD", "OPTIONS"): reading, not changing anything.
+| Username | Password | Role |
+|---|---|---|
+| *(your superuser)* | *(your password)* | Admin |
+| `reception1` | `Hospital@123` | Receptionist |
+| `drmehta` | `Hospital@123` | Doctor (sees only Dr. Mehta's appointments) |
 
+> [!TIP] Checkpoint
+> If you can see all five tables in `/admin/` and add rows, **Part A is done**. You already have something to show.
 
-class IsAdminRole(BasePermission):
-    message = "Only admins can do this."
+## Part B — REST API
 
-    def has_permission(self, request, view):
-        return bool(request.user.is_authenticated and request.user.is_admin_role)
+The API sends and receives **JSON** instead of HTML. Three pieces work together:
 
-
-class IsAdminOrReadOnly(BasePermission):
-    """Any logged-in user can read. Only admins can create/update/delete."""
-
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user.is_admin_role
-
-
-class IsFrontDeskOrReadOnly(BasePermission):
-    """Admins and receptionists can write. Doctors can only read."""
-
-    message = "Only reception or admin staff can do this."
-
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user.is_admin_role or request.user.is_receptionist
-
-
-class IsDoctorOrAdmin(BasePermission):
-    message = "Only doctors can do this."
-
-    def has_permission(self, request, view):
-        return bool(
-            request.user.is_authenticated
-            and (request.user.is_doctor or request.user.is_admin_role)
-        )
-
-
-class IsDoctorOrAdminOrReadOnly(BasePermission):
-    """Everyone logged in can read; doctors/admins can write; a doctor edits only their own."""
-
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user.is_doctor or request.user.is_admin_role
-
-    def has_object_permission(self, request, view, obj):
-        if request.method in SAFE_METHODS or request.user.is_admin_role:
-            return True
-        return obj.appointment.doctor.user_id == request.user.id
+```flow
+Serializer | converts a model object ↔ JSON and validates incoming data (like a ModelForm)
+ViewSet | one class that does list, create, retrieve, update and delete
+Router | builds all the URLs for a ViewSet automatically
 ```
 
-## 8. Serializers
+## 7. serializers.py
 
-> [!NOTE] What is a serializer? (the 20-second answer)
-> A serializer does three things. It converts a **model instance → JSON** for responses. It converts **JSON → validated Python data** for requests. It **saves** that data with `.save()`. `ModelSerializer` builds the fields for you from the model, the same way `ModelForm` does for HTML forms. Validation hooks: `validate_<field>(value)` checks one field, and `validate(attrs)` checks several fields together.
+Create a **new file** `hospitalapp/serializers.py`:
 
-### Accounts serializers (register + JWT with extra claims)
+```python title="hospitalapp/serializers.py"
+from datetime import date
 
-```python title="accounts/serializers.py"
-from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
-User = get_user_model()
-
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role"]
-        read_only_fields = ["id", "username", "role"]  # users can't promote themselves
-
-
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, validators=[validate_password])
-    password2 = serializers.CharField(write_only=True, label="Confirm password")
-
-    class Meta:
-        model = User
-        fields = [
-            "id", "username", "first_name", "last_name", "email", "phone", "role",
-            "password", "password2",
-        ]
-
-    def validate(self, attrs):
-        if attrs["password"] != attrs["password2"]:
-            raise serializers.ValidationError({"password2": "Passwords do not match."})
-        return attrs
-
-    def create(self, validated_data):
-        validated_data.pop("password2")
-        password = validated_data.pop("password")
-        user = User(**validated_data)
-        user.set_password(password)  # hashes the password, never store plain text
-        user.save()
-        return user
-
-
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Login: adds role/username inside the JWT and returns the user with the tokens."""
-
-    @classmethod
-    def get_token(cls, user):
-        token = super().get_token(user)
-        token["username"] = user.username
-        token["role"] = user.role
-        return token
-
-    def validate(self, attrs):
-        data = super().validate(attrs)  # {"refresh": "...", "access": "..."}
-        data["user"] = UserSerializer(self.user).data
-        return data
-```
-
-### Hospital serializers
-
-```python title="hospital/serializers.py"
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-from rest_framework import serializers
-
-from .models import Appointment, Department, Doctor, Patient, Prescription
-
-User = get_user_model()
+from .models import Department, Doctor, Patient, Appointment
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    # Filled by .annotate(doctor_count=Count("doctors")) in the ViewSet
-    doctor_count = serializers.IntegerField(read_only=True)
-
     class Meta:
         model = Department
-        fields = ["id", "name", "description", "doctor_count", "created_at"]
+        fields = ['id', 'name', 'description']
 
 
 class DoctorSerializer(serializers.ModelSerializer):
-    name = serializers.CharField(source="user.get_full_name", read_only=True)
-    department_name = serializers.CharField(source="department.name", read_only=True)
+    # Extra read-only field: shows "Cardiology" next to the department id
+    department_name = serializers.CharField(source='department.name', read_only=True)
 
     class Meta:
         model = Doctor
-        fields = [
-            "id", "user", "name", "department", "department_name",
-            "specialization", "phone", "consultation_fee", "is_available",
-        ]
+        fields = ['id', 'user', 'name', 'department', 'department_name',
+                  'specialization', 'phone', 'email', 'fee']
 
-    def validate_user(self, user):
-        if user.role != User.Role.DOCTOR:
-            raise serializers.ValidationError("This user does not have the DOCTOR role.")
-        return user
+    def validate_phone(self, value):
+        if not value.isdigit() or len(value) != 10:
+            raise serializers.ValidationError('Phone number must be exactly 10 digits.')
+        return value
+
+    def validate_fee(self, value):
+        if value < 0:
+            raise serializers.ValidationError('Fee cannot be negative.')
+        return value
 
 
 class PatientSerializer(serializers.ModelSerializer):
-    full_name = serializers.CharField(read_only=True)  # model @property
-    age = serializers.IntegerField(read_only=True)  # model @property
-
     class Meta:
         model = Patient
-        fields = [
-            "id", "first_name", "last_name", "full_name", "gender", "date_of_birth", "age",
-            "blood_group", "phone", "email", "address", "created_at",
-        ]
+        fields = ['id', 'name', 'age', 'gender', 'phone', 'blood_group', 'address', 'created_at']
 
-    def validate_date_of_birth(self, value):
-        if value > timezone.localdate():
-            raise serializers.ValidationError("Date of birth cannot be in the future.")
+    def validate_age(self, value):
+        if value < 0 or value > 120:
+            raise serializers.ValidationError('Age must be between 0 and 120.')
         return value
 
     def validate_phone(self, value):
-        digits = value.replace("+", "").replace(" ", "").replace("-", "")
-        if not digits.isdigit() or not 10 <= len(digits) <= 13:
-            raise serializers.ValidationError("Enter a valid phone number (10-13 digits).")
+        if not value.isdigit() or len(value) != 10:
+            raise serializers.ValidationError('Phone number must be exactly 10 digits.')
         return value
 
 
 class AppointmentSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.full_name", read_only=True)
-    doctor_name = serializers.StringRelatedField(source="doctor")
-    has_prescription = serializers.SerializerMethodField()
+    patient_name = serializers.CharField(source='patient.name', read_only=True)
+    doctor_name = serializers.CharField(source='doctor.name', read_only=True)
 
     class Meta:
         model = Appointment
-        fields = [
-            "id", "patient", "patient_name", "doctor", "doctor_name", "date", "time",
-            "reason", "status", "has_prescription", "created_by", "created_at",
-        ]
-        read_only_fields = ["status", "created_by", "created_at"]
+        fields = ['id', 'patient', 'patient_name', 'doctor', 'doctor_name',
+                  'date', 'time', 'reason', 'status', 'notes', 'created_at']
 
-    def get_has_prescription(self, obj):
-        return hasattr(obj, "prescription")
+    def validate_date(self, value):
+        if value < date.today():
+            raise serializers.ValidationError('Appointment date cannot be in the past.')
+        return value
 
-    def validate(self, attrs):
-        # On PATCH some fields are missing, so fall back to the existing values.
-        doctor = attrs.get("doctor", getattr(self.instance, "doctor", None))
-        day = attrs.get("date", getattr(self.instance, "date", None))
-        at = attrs.get("time", getattr(self.instance, "time", None))
+    def validate(self, data):
+        # Cross-field check: the same doctor cannot have two appointments at the same date + time
+        doctor = data.get('doctor')
+        appointment_date = data.get('date')
+        appointment_time = data.get('time')
 
-        if day and day < timezone.localdate():
-            raise serializers.ValidationError({"date": "Appointment date cannot be in the past."})
-        if at and not (Appointment.WORK_START <= at < Appointment.WORK_END):
-            raise serializers.ValidationError({"time": "Hospital hours are 09:00 to 17:00."})
-        if at and at.minute % Appointment.SLOT_MINUTES:
-            raise serializers.ValidationError({"time": "Book on the hour or half hour (e.g. 10:00, 10:30)."})
-        if "doctor" in attrs and not doctor.is_available:
-            raise serializers.ValidationError({"doctor": "This doctor is not available."})
-        if Appointment.slot_taken(doctor, day, at, exclude_pk=getattr(self.instance, "pk", None)):
-            raise serializers.ValidationError("This doctor already has an appointment at that time.")
-        return attrs
+        if doctor and appointment_date and appointment_time:
+            booked = Appointment.objects.filter(
+                doctor=doctor,
+                date=appointment_date,
+                time=appointment_time,
+                status='scheduled',
+            )
+            if self.instance:
+                # When updating, don't compare the appointment with itself
+                booked = booked.exclude(id=self.instance.id)
+            if booked.exists():
+                raise serializers.ValidationError('This doctor already has an appointment at this date and time.')
 
-
-class PrescriptionSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="appointment.patient.full_name", read_only=True)
-    doctor_name = serializers.StringRelatedField(source="appointment.doctor")
-
-    class Meta:
-        model = Prescription
-        fields = [
-            "id", "appointment", "patient_name", "doctor_name", "diagnosis",
-            "medicines", "advice", "follow_up_date", "created_at",
-        ]
-
-    def validate_appointment(self, appointment):
-        user = self.context["request"].user
-        if appointment.status == Appointment.Status.CANCELLED:
-            raise serializers.ValidationError("Cannot prescribe for a cancelled appointment.")
-        if not user.is_admin_role and appointment.doctor.user_id != user.id:
-            raise serializers.ValidationError("You can only prescribe for your own appointments.")
-        return appointment
-
-
-class AppointmentHistorySerializer(serializers.ModelSerializer):
-    """Nested: each appointment carries its prescription (or null)."""
-
-    doctor_name = serializers.StringRelatedField(source="doctor")
-    prescription = PrescriptionSerializer(read_only=True)
-
-    class Meta:
-        model = Appointment
-        fields = ["id", "date", "time", "doctor_name", "reason", "status", "prescription"]
+        return data
 ```
 
-> [!TIP] Serializer tricks used above, and how to say them in the interview
-> - `source="department.name"`: read a value through a relationship (flattening).
-> - `StringRelatedField`: show the related object's `__str__` instead of its id.
-> - `SerializerMethodField` + `get_<name>()`: any computed value.
-> - `read_only=True` / `read_only_fields`: shown in responses, ignored in requests.
-> - `write_only=True`: accepted in requests, never returned (passwords).
-> - Nested serializer (`PrescriptionSerializer(read_only=True)`): embeds a related object.
-> - `OneToOneField` → DRF automatically adds a uniqueness check, so you get "prescription with this appointment already exists".
+**What it does**
 
-## 9. API views (ViewSets)
+- **`ModelSerializer`** builds the fields from the model for you, just like `ModelForm` does for forms. `Meta.model` says which model. `Meta.fields` lists which columns appear in the JSON.
+- **Output (model → JSON).** A Patient object becomes:
+  ```json
+  {"id": 1, "name": "Amit", "age": 34, "gender": "male", "phone": "9123456789", "blood_group": "B+", "address": "", "created_at": "2030-01-10T09:12:00Z"}
+  ```
+- **Input (JSON → model).** When someone POSTs JSON, the serializer checks every field, runs your `validate_...` methods, then saves.
+- **Foreign keys** like `department`, `patient` and `doctor` are sent and shown as **ids** (`"doctor": 1`).
+- **`source='department.name'`** follows the foreign key and shows the department's name. `read_only=True` means it only appears in the output. Clients can't send it.
+- **`created_at`** is filled in automatically by the model (`auto_now_add`), so DRF makes it read-only on its own.
 
-A `ModelViewSet` gives you `list`, `create`, `retrieve`, `update`, `partial_update` and `destroy` in one class. `@action` adds extra endpoints like `/appointments/5/cancel/`.
+**Validation methods**
 
-### Auth views
+| Method | When it runs | Example |
+|---|---|---|
+| `validate_phone(self, value)` | For one field. The name must be `validate_<fieldname>` | Phone must be 10 digits |
+| `validate_age(self, value)` | For one field | Age between 0 and 120 |
+| `validate_date(self, value)` | For one field | No appointments in the past |
+| `validate(self, data)` | Once, with **all** fields together | Same doctor + same date + same time = double booking |
 
-```python title="accounts/views.py"
-from django.contrib.auth import get_user_model
-from rest_framework import generics, status
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+- To reject a value, `raise serializers.ValidationError('message')`. DRF then returns **400 Bad Request** with your message.
+- To accept it, `return value` (or `return data` in `validate`).
+- `self.instance` is the existing appointment when you **update** (PUT/PATCH) and `None` when you **create** (POST). That's why we exclude it, so an appointment doesn't clash with itself.
+- `data.get('doctor')` is used instead of `data['doctor']` because a PATCH may send only some fields.
 
-from .permissions import IsAdminRole
-from .serializers import CustomTokenObtainPairSerializer, RegisterSerializer, UserSerializer
+> [!NOTE] Why no Receptionist serializer?
+> Receptionists are created by the admin in `/admin/`, so the API doesn't need them. Only make a serializer for something the API actually exposes.
 
-User = get_user_model()
+## 8. permissions.py (roles)
 
+Create a **new file** `hospitalapp/permissions.py`:
 
-class LoginView(TokenObtainPairView):
-    """POST username + password -> access + refresh tokens (+ user info)."""
-
-    serializer_class = CustomTokenObtainPairSerializer
-
-
-class RegisterView(generics.CreateAPIView):
-    """Only an admin can create staff accounts (doctor / receptionist / admin)."""
-
-    queryset = User.objects.all()
-    serializer_class = RegisterSerializer
-    permission_classes = [IsAdminRole]
+```python title="hospitalapp/permissions.py"
+from rest_framework.permissions import BasePermission
+from .models import Doctor, Receptionist
 
 
-class MeView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserSerializer
+# ---------- Simple helper functions (also used by the web views in Part C) ----------
 
-    def get_object(self):
-        return self.request.user
+def is_admin(user):
+    return user.is_superuser
 
 
-class LogoutView(APIView):
-    """POST {"refresh": "<token>"} -> refresh token can no longer be used."""
+def is_doctor(user):
+    return Doctor.objects.filter(user=user).exists()
 
-    def post(self, request):
-        try:
-            RefreshToken(request.data["refresh"]).blacklist()
-        except (KeyError, TokenError):
-            return Response({"detail": "A valid refresh token is required."}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"detail": "Logged out."}, status=status.HTTP_205_RESET_CONTENT)
+
+def is_receptionist(user):
+    return Receptionist.objects.filter(user=user).exists()
+
+
+def is_admin_or_receptionist(user):
+    return is_admin(user) or is_receptionist(user)
+
+
+# ---------- Permission classes for the API ----------
+
+class IsAdminOrReadOnly(BasePermission):
+    # Any logged-in user can READ. Only the admin can create, edit or delete.
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True
+        return is_admin(request.user)
+
+
+class IsAdminOrReceptionistOrReadOnly(BasePermission):
+    # Any logged-in user can READ. Only admin / receptionist can create, edit or delete.
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True
+        return is_admin_or_receptionist(request.user)
+
+
+class AppointmentPermission(BasePermission):
+    # GET          -> any logged-in user
+    # POST, DELETE -> admin or receptionist (book / remove)
+    # PUT, PATCH   -> admin, receptionist or doctor (a doctor marks it completed)
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True
+        if request.method in ['POST', 'DELETE']:
+            return is_admin_or_receptionist(request.user)
+        return is_admin_or_receptionist(request.user) or is_doctor(request.user)
 ```
 
-### Hospital views
+**What it does**
 
-```python title="hospital/views.py"
-from django.db.models import Count, Q, Sum
-from django.utils import timezone
-from django.utils.dateparse import parse_date
-from rest_framework import status, viewsets
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.views import APIView
+- **Helper functions** answer one question each, "is this user a doctor?", by checking the tables from Step 3. `.filter(...).exists()` returns `True` or `False`.
+- **Permission classes** extend `BasePermission` and override `has_permission(self, request, view)`. DRF calls it **before** every request. Return `True` to allow the request or `False` to block it.
+- `request.method` is `'GET'`, `'POST'`, `'PUT'`, `'PATCH'` or `'DELETE'`. `GET`, `HEAD` and `OPTIONS` only read data, so we call them "read-only".
+- If you're not logged in, the API returns **401 Unauthorized**. If you're logged in but not allowed, it returns **403 Forbidden**.
 
-from accounts.permissions import (
-    IsAdminOrReadOnly,
-    IsDoctorOrAdmin,
-    IsDoctorOrAdminOrReadOnly,
-    IsFrontDeskOrReadOnly,
-)
+| Class | Used on | Rule |
+|---|---|---|
+| `IsAdminOrReadOnly` | Departments, Doctors | Everyone reads, only admin writes |
+| `IsAdminOrReceptionistOrReadOnly` | Patients | Everyone reads, front desk writes |
+| `AppointmentPermission` | Appointments | Front desk books, doctor may update |
 
-from .models import Appointment, Department, Doctor, Patient, Prescription
-from .serializers import (
-    AppointmentHistorySerializer,
-    AppointmentSerializer,
-    DepartmentSerializer,
-    DoctorSerializer,
-    PatientSerializer,
-    PrescriptionSerializer,
-)
+> [!NOTE] `has_permission` vs `has_object_permission`
+> `has_permission` checks the **whole request** ("can this user POST to appointments at all?"). `has_object_permission` checks **one row** ("can this user edit appointment #5?"). We don't need the second one. A doctor can only edit their own appointments because the doctor can't even **see** anyone else's (see `get_queryset` in Step 9).
+
+## 9. api_views.py (ViewSets)
+
+We keep API views in their own file so they don't mix with the web views. Create a **new file** `hospitalapp/api_views.py`:
+
+```python title="hospitalapp/api_views.py"
+from rest_framework import viewsets
+
+from .models import Department, Doctor, Patient, Appointment
+from .serializers import DepartmentSerializer, DoctorSerializer, PatientSerializer, AppointmentSerializer
+from .permissions import IsAdminOrReadOnly, IsAdminOrReceptionistOrReadOnly, AppointmentPermission, is_doctor
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    queryset = Department.objects.annotate(doctor_count=Count("doctors")).order_by("name")
+    queryset = Department.objects.all().order_by('name')
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminOrReadOnly]
-    search_fields = ["name"]
-    ordering_fields = ["name", "doctor_count"]
-
-    def destroy(self, request, *args, **kwargs):
-        department = self.get_object()
-        if department.doctors.exists():
-            return Response(
-                {"detail": "Move or delete this department's doctors first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return super().destroy(request, *args, **kwargs)
 
 
 class DoctorViewSet(viewsets.ModelViewSet):
-    queryset = Doctor.objects.select_related("user", "department")
     serializer_class = DoctorSerializer
     permission_classes = [IsAdminOrReadOnly]
-    filterset_fields = ["department", "is_available"]
-    search_fields = ["user__first_name", "user__last_name", "specialization", "department__name"]
-    ordering_fields = ["consultation_fee", "user__first_name"]
 
-    @action(detail=True, methods=["get"])
-    def schedule(self, request, pk=None):
-        """GET /api/doctors/{id}/schedule/?date=2025-01-31"""
-        doctor = self.get_object()
-        try:
-            day = parse_date(request.query_params.get("date", "")) or timezone.localdate()
-        except ValueError:
-            return Response({"date": "Use the format YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+    def get_queryset(self):
+        doctors = Doctor.objects.all().order_by('name')
 
-        booked = (
-            doctor.appointments.filter(date=day)
-            .exclude(status=Appointment.Status.CANCELLED)
-            .select_related("patient")
-            .order_by("time")
-        )
-        return Response(
-            {
-                "doctor": str(doctor),
-                "date": day,
-                "booked": AppointmentSerializer(booked, many=True).data,
-                "free_slots": doctor.free_slots(day),
-            }
-        )
+        # /api/doctors/?search=mehta
+        search = self.request.query_params.get('search')
+        if search:
+            doctors = doctors.filter(name__icontains=search)
+
+        # /api/doctors/?department=cardio
+        department = self.request.query_params.get('department')
+        if department:
+            doctors = doctors.filter(department__name__icontains=department)
+
+        return doctors
 
 
 class PatientViewSet(viewsets.ModelViewSet):
-    queryset = Patient.objects.all()
     serializer_class = PatientSerializer
-    permission_classes = [IsFrontDeskOrReadOnly]
-    filterset_fields = ["gender", "blood_group"]
-    search_fields = ["first_name", "last_name", "phone", "email"]
-    ordering_fields = ["first_name", "created_at", "date_of_birth"]
+    permission_classes = [IsAdminOrReceptionistOrReadOnly]
 
-    @action(detail=True, methods=["get"])
-    def history(self, request, pk=None):
-        """GET /api/patients/{id}/history/: every visit with its prescription."""
-        patient = self.get_object()
-        visits = patient.appointments.select_related(
-            "doctor__user", "prescription"
-        ).order_by("-date", "-time")
-        return Response(
-            {
-                "patient": PatientSerializer(patient).data,
-                "appointments": AppointmentHistorySerializer(visits, many=True).data,
-            }
-        )
+    def get_queryset(self):
+        patients = Patient.objects.all().order_by('-id')
+
+        # /api/patients/?search=amit
+        search = self.request.query_params.get('search')
+        if search:
+            patients = patients.filter(name__icontains=search)
+
+        return patients
 
 
 class AppointmentViewSet(viewsets.ModelViewSet):
     serializer_class = AppointmentSerializer
-    filterset_fields = ["status", "date", "doctor", "patient"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__phone", "reason"]
-    ordering_fields = ["date", "time", "created_at"]
+    permission_classes = [AppointmentPermission]
 
     def get_queryset(self):
-        qs = Appointment.objects.select_related("patient", "doctor__user", "prescription")
         user = self.request.user
-        if user.is_doctor:  # doctors only ever see their own appointments
-            qs = qs.filter(doctor__user=user)
-        return qs
+        appointments = Appointment.objects.all().order_by('-date', '-time')
 
-    def get_permissions(self):
-        if self.action == "complete":
-            return [IsDoctorOrAdmin()]
-        return [IsFrontDeskOrReadOnly()]
+        # A doctor only sees their own appointments
+        if is_doctor(user):
+            appointments = appointments.filter(doctor__user=user)
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        # /api/appointments/?status=scheduled
+        status = self.request.query_params.get('status')
+        if status:
+            appointments = appointments.filter(status=status)
 
-    @action(detail=False, methods=["get"])
-    def today(self, request):
-        qs = self.filter_queryset(self.get_queryset()).filter(date=timezone.localdate()).order_by("time")
-        return Response(self.get_serializer(qs, many=True).data)
-
-    def _change_status(self, appointment, new_status):
-        if appointment.status != Appointment.Status.SCHEDULED:
-            return Response(
-                {"detail": f"Appointment is already {appointment.get_status_display().lower()}."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        appointment.status = new_status
-        appointment.save(update_fields=["status"])
-        return Response(self.get_serializer(appointment).data)
-
-    @action(detail=True, methods=["post"])
-    def cancel(self, request, pk=None):
-        return self._change_status(self.get_object(), Appointment.Status.CANCELLED)
-
-    @action(detail=True, methods=["post"])
-    def complete(self, request, pk=None):
-        return self._change_status(self.get_object(), Appointment.Status.COMPLETED)
-
-
-class PrescriptionViewSet(viewsets.ModelViewSet):
-    serializer_class = PrescriptionSerializer
-    permission_classes = [IsDoctorOrAdminOrReadOnly]
-    filterset_fields = ["appointment__doctor", "appointment__patient"]
-    search_fields = ["diagnosis", "medicines", "appointment__patient__first_name"]
-
-    def get_queryset(self):
-        qs = Prescription.objects.select_related("appointment__patient", "appointment__doctor__user")
-        if self.request.user.is_doctor:
-            qs = qs.filter(appointment__doctor__user=self.request.user)
-        return qs
-
-    def perform_create(self, serializer):
-        prescription = serializer.save()
-        # Writing a prescription means the visit happened.
-        Appointment.objects.filter(pk=prescription.appointment_id).update(
-            status=Appointment.Status.COMPLETED
-        )
-
-
-class DashboardStatsView(APIView):
-    """GET /api/dashboard/: numbers for a dashboard (uses aggregate + annotate)."""
-
-    def get(self, request):
-        today = timezone.localdate()
-        appointments = Appointment.objects.all()
-        if request.user.is_doctor:
-            appointments = appointments.filter(doctor__user=request.user)
-
-        by_status = dict(
-            appointments.order_by().values_list("status").annotate(total=Count("id"))
-        )
-        revenue = appointments.filter(status=Appointment.Status.COMPLETED).aggregate(
-            total=Sum("doctor__consultation_fee")
-        )["total"] or 0
-        busiest = (
-            Doctor.objects.select_related("user")
-            .annotate(today_count=Count("appointments", filter=Q(appointments__date=today)))
-            .order_by("-today_count")[:5]
-        )
-        return Response(
-            {
-                "patients": Patient.objects.count(),
-                "doctors": Doctor.objects.count(),
-                "departments": Department.objects.count(),
-                "appointments_today": appointments.filter(date=today).count(),
-                "appointments_by_status": by_status,
-                "revenue_from_completed": revenue,
-                "busiest_doctors_today": [
-                    {"doctor": str(d), "appointments": d.today_count} for d in busiest
-                ],
-            }
-        )
+        return appointments
 ```
 
-> [!IMPORTANT] Three things worth pointing out to the examiner
-> 1. **`get_queryset()` filtering by role.** A doctor asking for someone else's appointment gets a 404, not someone else's data.
-> 2. **`select_related(...)`** loads related rows with a JOIN, which avoids the N+1 query problem.
-> 3. **`perform_create()`** sets `created_by` from the logged-in user, so the client can't fake it.
+**What it does**
 
-## 10. URLs
+- **`ModelViewSet`** gives you 6 actions from one class, with no extra code:
 
-```python title="accounts/urls.py"
-from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
+| HTTP | URL | Action |
+|---|---|---|
+| GET | `/api/patients/` | `list` (all patients) |
+| POST | `/api/patients/` | `create` |
+| GET | `/api/patients/1/` | `retrieve` (one patient) |
+| PUT | `/api/patients/1/` | `update` (send all fields) |
+| PATCH | `/api/patients/1/` | `partial_update` (send only changed fields) |
+| DELETE | `/api/patients/1/` | `destroy` |
 
-from . import views
+- `serializer_class` says which serializer converts the data. `permission_classes` says which permission class from Step 8 to check.
+- **`queryset = ...`** is a fixed list of rows. Departments use it because they never change per user.
+- **`get_queryset(self)`** is a method you write when the rows depend on the request. DRF uses it for list, retrieve, update and delete.
+  - `self.request.query_params.get('search')` reads `?search=...` from the URL. It returns `None` if it's missing.
+  - `name__icontains=search` means "name contains this text, ignoring upper/lower case".
+  - `department__name__icontains` goes through the foreign key: the doctor's department's name.
+  - `doctor__user=user` means "appointments whose doctor is linked to this login user". That's how a doctor sees only their own rows. It also means a doctor gets **404** if they try to open someone else's appointment.
+- `.order_by('-id')` sorts newest first. The `-` means descending.
 
-urlpatterns = [
-    path("login/", views.LoginView.as_view(), name="token_obtain_pair"),
-    path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-    path("logout/", views.LogoutView.as_view(), name="api_logout"),
-    path("register/", views.RegisterView.as_view(), name="register"),
-    path("me/", views.MeView.as_view(), name="me"),
-]
-```
+## 10. Project urls.py (router + JWT URLs)
 
-```python title="hospital/urls.py"
-from django.urls import include, path
+Open `hospitalproject/urls.py` and replace everything with:
+
+```python title="hospitalproject/urls.py"
+from django.contrib import admin
+from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from . import views
+from hospitalapp.api_views import DepartmentViewSet, DoctorViewSet, PatientViewSet, AppointmentViewSet
 
 router = DefaultRouter()
-router.register("departments", views.DepartmentViewSet)
-router.register("doctors", views.DoctorViewSet)
-router.register("patients", views.PatientViewSet)
-# No class-level `queryset` on these two, so the router needs a basename
-router.register("appointments", views.AppointmentViewSet, basename="appointment")
-router.register("prescriptions", views.PrescriptionViewSet, basename="prescription")
+router.register('departments', DepartmentViewSet, basename='department')
+router.register('doctors', DoctorViewSet, basename='doctor')
+router.register('patients', PatientViewSet, basename='patient')
+router.register('appointments', AppointmentViewSet, basename='appointment')
 
 urlpatterns = [
-    path("dashboard/", views.DashboardStatsView.as_view(), name="api_dashboard"),
-    path("", include(router.urls)),
+    path('admin/', admin.site.urls),
+
+    # JWT login
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # All API URLs made by the router
+    path('api/', include(router.urls)),
+
+    # Login / logout links on the browsable API pages
+    path('api-auth/', include('rest_framework.urls')),
 ]
 ```
 
-Replace the project URLs. We'll add the web pages in step 13.
+**What it does**
 
-```python title="hms/urls.py"
-from django.contrib import admin
-from django.urls import include, path
+- `DefaultRouter()` makes a router. Each `router.register('patients', PatientViewSet, basename='patient')` line creates **both** URLs, `patients/` and `patients/<id>/`, for all 6 actions.
+- `basename` is a prefix for the URL names (`patient-list`, `patient-detail`). It's **required** here because some viewsets use `get_queryset` instead of a `queryset` attribute.
+- `path('api/', include(router.urls))` puts every router URL under `/api/`. `DefaultRouter` also makes a clickable index page at `/api/`.
+- `TokenObtainPairView` is the **login** endpoint. POST a username and password, and you get two tokens back.
+- `TokenRefreshView` takes a refresh token and gives back a new access token.
+- `api-auth/` adds a **Log in** link to DRF's browser pages, so you can test in the browser without Postman.
 
-urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/", include("hospital.urls")),
-    path("api-auth/", include("rest_framework.urls")),  # login button on the browsable API
-]
-```
+## 11. Switch on JWT (the one extra setting)
 
-```bash
-python manage.py runserver
-```
+Open `hospitalproject/settings.py` again and add this block **at the very end of the file**:
 
-Open <http://127.0.0.1:8000/api/>. DRF's **browsable API** lists every endpoint. You're already logged in from the admin, so you can create departments, doctors and patients right in the browser. **Checkpoint 2:** a full CRUD API.
-
-## 11. Seed demo data (one command)
-
-Typing test data by hand wastes the examiner's time. Write a management command instead. Create the folders and two **empty** `__init__.py` files:
-
-```bash
-mkdir hospital\management\commands
-New-Item hospital\management\__init__.py, hospital\management\commands\__init__.py
-```
-
-> [!NOTE]
-> That's PowerShell. In Git Bash/macOS/Linux use `mkdir -p hospital/management/commands && touch hospital/management/__init__.py hospital/management/commands/__init__.py`. You can also just create the two empty files in VS Code.
-
-```python title="hospital/management/commands/seed.py"
-import datetime as dt
-
-from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
-from django.utils import timezone
-
-from hospital.models import Appointment, Department, Doctor, Patient
-
-User = get_user_model()
-
-DEPARTMENTS = ["Cardiology", "Orthopedics", "Pediatrics", "General Medicine"]
-
-DOCTORS = [
-    # username, first, last, department, specialization, fee
-    ("dr_mehta", "Anil", "Mehta", "Cardiology", "Cardiologist", 800),
-    ("dr_rao", "Priya", "Rao", "Orthopedics", "Orthopedic Surgeon", 700),
-    ("dr_khan", "Sana", "Khan", "Pediatrics", "Pediatrician", 600),
-    ("dr_iyer", "Vikram", "Iyer", "General Medicine", "General Physician", 400),
-]
-
-PATIENTS = [
-    ("Ravi", "Kumar", "M", "1985-03-12", "B+", "9876500001"),
-    ("Neha", "Sharma", "F", "1992-07-25", "O+", "9876500002"),
-    ("Arjun", "Patel", "M", "2015-11-02", "A+", "9876500003"),
-    ("Fatima", "Shaikh", "F", "1978-01-30", "AB+", "9876500004"),
-    ("John", "Dsouza", "M", "1965-09-18", "O-", "9876500005"),
-    ("Meera", "Nair", "F", "2001-05-09", "B-", "9876500006"),
-]
-
-
-class Command(BaseCommand):
-    help = "Create demo users, departments, doctors, patients and today's appointments."
-
-    def make_user(self, username, password, role, **extra):
-        user, _ = User.objects.get_or_create(username=username, defaults={"role": role, **extra})
-        user.set_password(password)
-        user.save()
-        return user
-
-    def handle(self, *args, **options):
-        admin = self.make_user("admin", "admin123", User.Role.ADMIN, is_staff=True, is_superuser=True)
-        self.make_user("reception", "pass1234", User.Role.RECEPTIONIST, first_name="Riya")
-
-        departments = {
-            name: Department.objects.get_or_create(name=name)[0] for name in DEPARTMENTS
-        }
-
-        doctors = []
-        for i, (username, first, last, dept, spec, fee) in enumerate(DOCTORS, start=1):
-            user = self.make_user(username, "pass1234", User.Role.DOCTOR, first_name=first, last_name=last)
-            doctor, _ = Doctor.objects.get_or_create(
-                user=user,
-                defaults={
-                    "department": departments[dept],
-                    "specialization": spec,
-                    "phone": f"90000000{i:02d}",
-                    "consultation_fee": fee,
-                },
-            )
-            doctors.append(doctor)
-
-        patients = []
-        for first, last, gender, dob, blood, phone in PATIENTS:
-            patient, _ = Patient.objects.get_or_create(
-                phone=phone,
-                defaults={
-                    "first_name": first, "last_name": last, "gender": gender,
-                    "date_of_birth": dob, "blood_group": blood,
-                },
-            )
-            patients.append(patient)
-
-        today = timezone.localdate()
-        for i, patient in enumerate(patients):
-            Appointment.objects.get_or_create(
-                doctor=doctors[i % len(doctors)],
-                date=today,
-                time=dt.time(10 + i, 0),
-                defaults={"patient": patient, "reason": "Routine check-up", "created_by": admin},
-            )
-
-        self.stdout.write(self.style.SUCCESS(
-            "Seeded! Logins -> admin/admin123, reception/pass1234, dr_mehta/pass1234"
-        ))
-```
-
-```bash
-python manage.py seed
-```
-
-## 12. Test the API with JWT (Postman or curl)
-
-### How JWT works here
-
-```flow
-Login | POST /api/auth/login/ with username + password
-Server | checks the password, returns access (60 min) + refresh (1 day) tokens
-Every request | send header Authorization: Bearer <access>
-Server | verifies the token signature, no database session needed
-Access expires | POST /api/auth/refresh/ with the refresh token, get a new access token
-Logout | POST /api/auth/logout/ to blacklist the refresh token
-```
-
-### In Postman
-
-1. **POST** `http://127.0.0.1:8000/api/auth/login/`, Body → raw → JSON:
-
-```json
-{ "username": "reception", "password": "pass1234" }
-```
-
-Response:
-
-```json
-{
-  "refresh": "eyJhbGciOiJIUzI1NiIs...",
-  "access": "eyJhbGciOiJIUzI1NiIs...",
-  "user": { "id": 2, "username": "reception", "first_name": "Riya", "role": "RECEPTIONIST", ... }
+```python title="hospitalproject/settings.py — add at the end"
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
 }
 ```
 
-2. Copy `access`. On the next request, open the **Authorization** tab → Type **Bearer Token** → paste.
+**What it does**
+- `DEFAULT_AUTHENTICATION_CLASSES` tells DRF **how to work out who the user is** on each API request.
+- `JWTAuthentication` reads the header `Authorization: Bearer <token>` (what Postman sends).
+- `SessionAuthentication` reads the normal Django login cookie (what the browser sends after you log in through `api-auth/`).
 
-3. **POST** `http://127.0.0.1:8000/api/patients/`:
+> [!IMPORTANT] Is this block really needed?
+> **Yes, this one is.** Without it, DRF only checks the session cookie and ignores the `Bearer` token completely. Postman would always get *"Authentication credentials were not provided"* even with a valid token. You don't need anything else: no token lifetimes, no pagination and no `LOGIN_URL`. The defaults are fine (access token lasts 5 minutes, refresh token lasts 1 day).
 
-```json
-{
-  "first_name": "Amit",
-  "last_name": "Verma",
-  "gender": "M",
-  "date_of_birth": "1990-04-15",
-  "blood_group": "A+",
-  "phone": "9123456789",
-  "email": "amit@example.com"
-}
-```
+## 12. Test the API
 
-4. **POST** `http://127.0.0.1:8000/api/appointments/` (use a future date):
+Restart the server if it isn't running (`python manage.py runserver`).
 
-```json
-{ "patient": 7, "doctor": 1, "date": "2030-01-15", "time": "10:30", "reason": "Fever and headache" }
-```
+### In the browser
 
-Send the **same request again** and you get the double-booking error:
+1. Open `http://127.0.0.1:8000/api/`. You'll see a list of all endpoints.
+2. Click **Log in** (top right) and log in as `reception1`.
+3. Open `/api/patients/`, scroll down, fill in the form and click **POST**. The new patient appears.
+4. Open `/api/departments/` and try to POST. You get **403**, because only the admin can add departments.
 
-```json
-{ "non_field_errors": ["This doctor already has an appointment at that time."] }
-```
+### In Postman (with JWT)
 
-5. Try other endpoints:
+**Step 1: log in and get tokens**
 
-```text
-GET  /api/patients/?search=sharma
-GET  /api/patients/?gender=F&ordering=-created_at
-GET  /api/appointments/?status=SCHEDULED&date=2030-01-15
-GET  /api/appointments/today/
-GET  /api/doctors/1/schedule/?date=2030-01-15
-GET  /api/patients/1/history/
-POST /api/appointments/1/cancel/
-GET  /api/dashboard/
-```
-
-6. Log in as `dr_mehta` / `pass1234`. `GET /api/appointments/` now shows **only Dr. Mehta's** appointments. A doctor who tries `POST /api/patients/` gets `403 Forbidden`. Then write a prescription:
+- Method `POST`, URL `http://127.0.0.1:8000/api/token/`
+- Body → raw → JSON:
 
 ```json
 {
-  "appointment": 1,
-  "diagnosis": "Viral fever",
-  "medicines": "Paracetamol 500mg - 1-0-1 - 3 days\nORS - after each loose motion",
-  "advice": "Rest, plenty of fluids",
-  "follow_up_date": "2030-01-20"
+    "username": "reception1",
+    "password": "Hospital@123"
 }
 ```
 
-The appointment's status changes to `COMPLETED` automatically.
+The response has two tokens:
 
-### Same thing with curl (Windows: use `curl.exe`)
-
-```bash
-curl.exe -X POST http://127.0.0.1:8000/api/auth/login/ -H "Content-Type: application/json" -d "{\"username\":\"reception\",\"password\":\"pass1234\"}"
-curl.exe http://127.0.0.1:8000/api/patients/ -H "Authorization: Bearer PASTE_ACCESS_TOKEN"
+```json
+{
+    "refresh": "eyJhbGciOiJIUzI1NiIs...",
+    "access": "eyJhbGciOiJIUzI1NiIs..."
+}
 ```
 
-## 13. Web dashboard (MVT side)
+**Step 2: use the access token.** In every other request, open the **Authorization** tab, choose **Bearer Token** and paste the `access` value. Postman then sends the header `Authorization: Bearer eyJhbGci...` for you.
 
-The API is the main deliverable. A small HTML front end shows you also know classic Django. It uses **session login** (`django.contrib.auth`) and the same models.
+**Step 3: try these requests**
 
-### Forms
+| Login as | Request | Body (raw JSON) | Expected |
+|---|---|---|---|
+| reception1 | `GET /api/patients/` | | 200, list of patients |
+| reception1 | `POST /api/patients/` | `{"name": "Amit", "age": 34, "gender": "male", "phone": "9123456789", "blood_group": "B+"}` | 201 Created |
+| reception1 | `POST /api/patients/` | `{"name": "X", "age": 150, "gender": "male", "phone": "12ab"}` | 400, age and phone errors |
+| reception1 | `POST /api/appointments/` | `{"patient": 1, "doctor": 1, "date": "2030-01-15", "time": "10:30", "reason": "Fever"}` | 201 Created |
+| reception1 | same POST again | same body | 400, *already has an appointment* |
+| reception1 | `POST /api/departments/` | `{"name": "Neurology"}` | 403 Forbidden |
+| drmehta | `GET /api/appointments/` | | 200, only Dr. Mehta's appointments |
+| drmehta | `PATCH /api/appointments/1/` | `{"status": "completed", "notes": "Paracetamol 3 days"}` | 200 |
+| drmehta | `POST /api/patients/` | any | 403 Forbidden |
+| admin | `POST /api/departments/` | `{"name": "Neurology"}` | 201 Created |
+| *(no token)* | `GET /api/patients/` | | 401 Unauthorized |
 
-```python title="hospital/forms.py"
-from django import forms
-from django.utils import timezone
+**Step 4: when the access token expires** (after 5 minutes you get 401 *"Token is invalid or expired"*):
 
-from .models import Appointment, Doctor, Patient
+- `POST http://127.0.0.1:8000/api/token/refresh/` with body `{"refresh": "<your refresh token>"}`
+- You get a new `access` token. Paste it into the Bearer Token box again.
 
+> [!REMEMBER] Status codes to say in the interview
+> **200** OK · **201** Created · **204** Deleted (No Content) · **400** validation error · **401** not logged in / bad token · **403** logged in but not allowed · **404** not found (or not yours)
 
-class DateInput(forms.DateInput):
-    input_type = "date"
+> [!TIP] Checkpoint
+> If Postman works for all three roles, **Part B is done**.
 
+## Part C — Web pages (MVT)
 
-class TimeInput(forms.TimeInput):
-    input_type = "time"
+Now the normal Django side: HTML pages, login with a form, and pages for patients and appointments. This is the same style as the Player app: `request.POST.get(...)`, `objects.create(...)`, `redirect(...)`.
 
+## 13. views.py (web pages)
 
-class PatientForm(forms.ModelForm):
-    class Meta:
-        model = Patient
-        fields = [
-            "first_name", "last_name", "gender", "date_of_birth",
-            "blood_group", "phone", "email", "address",
-        ]
-        widgets = {
-            "date_of_birth": DateInput(),
-            "address": forms.Textarea(attrs={"rows": 2}),
-        }
+Open `hospitalapp/views.py` and replace everything with:
 
-    def clean_date_of_birth(self):
-        dob = self.cleaned_data["date_of_birth"]
-        if dob > timezone.localdate():
-            raise forms.ValidationError("Date of birth cannot be in the future.")
-        return dob
+```python title="hospitalapp/views.py"
+from datetime import date
 
-
-class AppointmentForm(forms.ModelForm):
-    class Meta:
-        model = Appointment
-        fields = ["patient", "doctor", "date", "time", "reason"]
-        widgets = {"date": DateInput(), "time": TimeInput(attrs={"step": 1800})}
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields["doctor"].queryset = Doctor.objects.filter(is_available=True).select_related("user")
-
-    def clean(self):
-        cleaned = super().clean()
-        doctor, day, at = cleaned.get("doctor"), cleaned.get("date"), cleaned.get("time")
-        if day and day < timezone.localdate():
-            self.add_error("date", "Appointment date cannot be in the past.")
-        if at and not (Appointment.WORK_START <= at < Appointment.WORK_END):
-            self.add_error("time", "Hospital hours are 09:00 to 17:00.")
-        if doctor and day and at and Appointment.slot_taken(doctor, day, at):
-            raise forms.ValidationError("This doctor already has an appointment at that time.")
-        return cleaned
-```
-
-### Template views
-
-```python title="hospital/web_views.py"
-from functools import wraps
-
-from django.contrib import messages
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import login, logout
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
-from django.core.paginator import Paginator
-from django.db.models import Q
-from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
-from django.views.decorators.http import require_POST
 
-from .forms import AppointmentForm, PatientForm
-from .models import Appointment, Doctor, Patient
+from .models import Doctor, Patient, Appointment
+from .permissions import is_doctor, is_admin_or_receptionist
 
 
-def front_desk_required(view_func):
-    """Logged in AND admin/receptionist, otherwise 403."""
+# ---------------- Login / Logout ----------------
 
-    @wraps(view_func)
-    @login_required
-    def wrapper(request, *args, **kwargs):
-        if not (request.user.is_admin_role or request.user.is_receptionist):
-            raise PermissionDenied
-        return view_func(request, *args, **kwargs)
+def login_view(request):
+    if request.method == 'POST':
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            login(request, form.get_user())
+            return redirect('dashboard')
+    else:
+        form = AuthenticationForm()
+    return render(request, 'login.html', {'form': form})
 
-    return wrapper
+
+def logout_view(request):
+    logout(request)
+    return redirect('login')
 
 
-@login_required
+# ---------------- Dashboard ----------------
+
+@login_required(login_url='login')
 def dashboard(request):
-    today = timezone.localdate()
-    appointments = (
-        Appointment.objects.filter(date=today)
-        .select_related("patient", "doctor__user")
-        .order_by("time")
-    )
-    if request.user.is_doctor:
+    todays_appointments = Appointment.objects.filter(date=date.today()).order_by('time')
+    if is_doctor(request.user):
+        todays_appointments = todays_appointments.filter(doctor__user=request.user)
+
+    context = {
+        'total_patients': Patient.objects.count(),
+        'total_doctors': Doctor.objects.count(),
+        'total_appointments': Appointment.objects.count(),
+        'scheduled_count': Appointment.objects.filter(status='scheduled').count(),
+        'todays_appointments': todays_appointments,
+    }
+    return render(request, 'dashboard.html', context)
+
+
+# ---------------- Patients ----------------
+
+@login_required(login_url='login')
+def patient_list(request):
+    search = request.GET.get('search', '')
+    if search:
+        patients = Patient.objects.filter(name__icontains=search).order_by('-id')
+    else:
+        patients = Patient.objects.all().order_by('-id')
+
+    context = {
+        'patients': patients,
+        'search': search,
+        'can_edit': is_admin_or_receptionist(request.user),
+    }
+    return render(request, 'patient_list.html', context)
+
+
+@login_required(login_url='login')
+def add_patient(request):
+    if not is_admin_or_receptionist(request.user):
+        return redirect('patient_list')
+
+    if request.method == 'POST':
+        Patient.objects.create(
+            name=request.POST.get('name'),
+            age=request.POST.get('age'),
+            gender=request.POST.get('gender'),
+            phone=request.POST.get('phone'),
+            blood_group=request.POST.get('blood_group'),
+            address=request.POST.get('address'),
+        )
+        return redirect('patient_list')
+
+    return render(request, 'add_patient.html')
+
+
+@login_required(login_url='login')
+def edit_patient(request, id):
+    if not is_admin_or_receptionist(request.user):
+        return redirect('patient_list')
+
+    patient = get_object_or_404(Patient, id=id)
+
+    if request.method == 'POST':
+        patient.name = request.POST.get('name')
+        patient.age = request.POST.get('age')
+        patient.gender = request.POST.get('gender')
+        patient.phone = request.POST.get('phone')
+        patient.blood_group = request.POST.get('blood_group')
+        patient.address = request.POST.get('address')
+        patient.save()
+        return redirect('patient_list')
+
+    return render(request, 'edit_patient.html', {'patient': patient})
+
+
+@login_required(login_url='login')
+def delete_patient(request, id):
+    if not is_admin_or_receptionist(request.user):
+        return redirect('patient_list')
+
+    patient = get_object_or_404(Patient, id=id)
+    if request.method == 'POST':
+        patient.delete()
+    return redirect('patient_list')
+
+
+# ---------------- Appointments ----------------
+
+@login_required(login_url='login')
+def appointment_list(request):
+    appointments = Appointment.objects.all().order_by('-date', '-time')
+
+    # A doctor only sees their own appointments
+    if is_doctor(request.user):
         appointments = appointments.filter(doctor__user=request.user)
 
-    stats = {
-        "Patients": Patient.objects.count(),
-        "Doctors": Doctor.objects.count(),
-        "Today": appointments.count(),
-        "Scheduled": appointments.filter(status=Appointment.Status.SCHEDULED).count(),
+    status = request.GET.get('status', '')
+    if status:
+        appointments = appointments.filter(status=status)
+
+    context = {
+        'appointments': appointments,
+        'status': status,
+        'can_edit': is_admin_or_receptionist(request.user),
     }
-    return render(request, "hospital/dashboard.html", {
-        "today": today, "appointments": appointments, "stats": stats,
-    })
+    return render(request, 'appointment_list.html', context)
 
 
-@login_required
-def patient_list(request):
-    q = request.GET.get("q", "").strip()
-    patients = Patient.objects.all()
-    if q:
-        patients = patients.filter(
-            Q(first_name__icontains=q) | Q(last_name__icontains=q) | Q(phone__icontains=q)
-        )
-    page = Paginator(patients, 10).get_page(request.GET.get("page"))
-    return render(request, "hospital/patient_list.html", {"page": page, "q": q})
+@login_required(login_url='login')
+def add_appointment(request):
+    if not is_admin_or_receptionist(request.user):
+        return redirect('appointment_list')
+
+    error = ''
+
+    if request.method == 'POST':
+        patient_id = request.POST.get('patient')
+        doctor_id = request.POST.get('doctor')
+        appointment_date = request.POST.get('date')   # comes as text: '2030-01-15'
+        appointment_time = request.POST.get('time')   # comes as text: '10:30'
+        reason = request.POST.get('reason')
+
+        already_booked = Appointment.objects.filter(
+            doctor_id=doctor_id,
+            date=appointment_date,
+            time=appointment_time,
+            status='scheduled',
+        ).exists()
+
+        if appointment_date < str(date.today()):
+            error = 'You cannot book an appointment in the past.'
+        elif already_booked:
+            error = 'This doctor already has an appointment at this date and time.'
+        else:
+            Appointment.objects.create(
+                patient_id=patient_id,
+                doctor_id=doctor_id,
+                date=appointment_date,
+                time=appointment_time,
+                reason=reason,
+            )
+            return redirect('appointment_list')
+
+    context = {
+        'patients': Patient.objects.all().order_by('name'),
+        'doctors': Doctor.objects.all().order_by('name'),
+        'error': error,
+    }
+    return render(request, 'add_appointment.html', context)
 
 
-@login_required
-def patient_detail(request, pk):
-    patient = get_object_or_404(Patient, pk=pk)
-    visits = patient.appointments.select_related("doctor__user", "prescription")
-    return render(request, "hospital/patient_detail.html", {"patient": patient, "visits": visits})
+@login_required(login_url='login')
+def complete_appointment(request, id):
+    appointment = get_object_or_404(Appointment, id=id)
 
+    # A doctor can only complete their own appointments
+    if is_doctor(request.user) and appointment.doctor.user != request.user:
+        return redirect('appointment_list')
 
-@front_desk_required
-def patient_form(request, pk=None):
-    patient = get_object_or_404(Patient, pk=pk) if pk else None
-    form = PatientForm(request.POST or None, instance=patient)
-    if request.method == "POST" and form.is_valid():
-        patient = form.save()
-        messages.success(request, f"Saved {patient.full_name}.")
-        return redirect("patient_detail", pk=patient.pk)
-    return render(request, "hospital/patient_form.html", {"form": form, "patient": patient})
-
-
-@front_desk_required
-def appointment_create(request):
-    form = AppointmentForm(request.POST or None, initial={"patient": request.GET.get("patient")})
-    if request.method == "POST" and form.is_valid():
-        appointment = form.save(commit=False)
-        appointment.created_by = request.user
+    if request.method == 'POST':
+        appointment.notes = request.POST.get('notes')
+        appointment.status = 'completed'
         appointment.save()
-        messages.success(request, f"Booked: {appointment}")
-        return redirect("dashboard")
-    return render(request, "hospital/appointment_form.html", {"form": form})
+        return redirect('appointment_list')
+
+    return render(request, 'complete_appointment.html', {'appointment': appointment})
 
 
-@login_required
-@require_POST
-def appointment_status(request, pk, new_status):
-    appointment = get_object_or_404(Appointment, pk=pk)
-    allowed = {
-        "cancel": (Appointment.Status.CANCELLED, request.user.is_admin_role or request.user.is_receptionist),
-        "complete": (Appointment.Status.COMPLETED, request.user.is_admin_role or appointment.doctor.user_id == request.user.id),
-    }
-    if new_status not in allowed or not allowed[new_status][1]:
-        raise PermissionDenied
-    if appointment.status == Appointment.Status.SCHEDULED:
-        appointment.status = allowed[new_status][0]
-        appointment.save(update_fields=["status"])
-        messages.success(request, f"Appointment marked {appointment.get_status_display().lower()}.")
-    return redirect("dashboard")
+@login_required(login_url='login')
+def cancel_appointment(request, id):
+    if not is_admin_or_receptionist(request.user):
+        return redirect('appointment_list')
+
+    appointment = get_object_or_404(Appointment, id=id)
+    if request.method == 'POST':
+        appointment.status = 'cancelled'
+        appointment.save()
+    return redirect('appointment_list')
 ```
 
-```python title="hospital/web_urls.py"
+**What each part does**
+
+**Login and logout** (same as your Authentication notes)
+- `AuthenticationForm` is Django's ready-made login form. It has username and password fields and checks the password for you.
+- `form.is_valid()` is `True` only if the username and password are correct. Then `login(request, user)` saves the user in the session (a cookie), so every later page knows who you are.
+- `logout(request)` clears the session.
+
+**`@login_required(login_url='login')`**
+- Put it above a view to protect it. If nobody is logged in, Django redirects to the URL named `'login'` instead of showing the page.
+
+**dashboard**
+- `.count()` returns how many rows there are, for the summary numbers.
+- `filter(date=date.today())` returns only today's appointments. A doctor sees only theirs.
+- `context` is a dictionary. Every key becomes a variable you can use in the template, like `{{ total_patients }}`.
+
+**patient_list**
+- `request.GET.get('search', '')` reads `?search=...` from the URL (from the search box). The `''` is the default when it's missing.
+- `can_edit` is `True` for admin and receptionist. The template uses it to hide the Add, Edit and Delete buttons from doctors.
+
+**add_patient / edit_patient**
+- The first `if` blocks doctors: they are sent back to the list.
+- A **GET** request just shows the empty form (add) or the filled form (edit).
+- A **POST** request (form submitted) reads each input with `request.POST.get('<input name>')`, saves, then redirects to the list.
+- `Patient.objects.create(...)` makes and saves a new row in one step. For edit, we change the fields of the existing object and call `.save()`.
+- `get_object_or_404(Patient, id=id)` returns the patient, or shows a 404 page if that id doesn't exist.
+
+**delete_patient / cancel_appointment**
+- They only delete or cancel on **POST** (a button inside a form with `{% csrf_token %}`). Then a random link or a page refresh can't delete data by accident.
+
+**add_appointment**
+- `patient_id=` and `doctor_id=` save the foreign key using the id number that came from the dropdown.
+- The **double-booking check** is the same rule as the serializer's `validate()`, but written by hand: look for an existing scheduled appointment with the same doctor, date and time.
+- `appointment_date < str(date.today())` works because dates in `YYYY-MM-DD` text form sort correctly as text.
+- If something is wrong, we put the message in `error` and show the form again. Nothing is saved.
+
+**complete_appointment**
+- GET shows a page with a notes box. POST saves the notes and sets `status` to `'completed'`.
+- `appointment.doctor.user != request.user` stops Dr. Mehta from completing Dr. Rao's appointments.
+
+## 14. hospitalapp/urls.py (web URLs)
+
+Create a **new file** `hospitalapp/urls.py`:
+
+```python title="hospitalapp/urls.py"
 from django.urls import path
-
-from . import web_views as views
+from . import views
 
 urlpatterns = [
-    path("", views.dashboard, name="dashboard"),
-    path("patients/", views.patient_list, name="patient_list"),
-    path("patients/new/", views.patient_form, name="patient_create"),
-    path("patients/<int:pk>/", views.patient_detail, name="patient_detail"),
-    path("patients/<int:pk>/edit/", views.patient_form, name="patient_edit"),
-    path("appointments/new/", views.appointment_create, name="appointment_create"),
-    path("appointments/<int:pk>/<str:new_status>/", views.appointment_status, name="appointment_status"),
+    path('', views.dashboard, name='dashboard'),
+    path('login/', views.login_view, name='login'),
+    path('logout/', views.logout_view, name='logout'),
+
+    path('patients/', views.patient_list, name='patient_list'),
+    path('patients/add/', views.add_patient, name='add_patient'),
+    path('patients/edit/<int:id>/', views.edit_patient, name='edit_patient'),
+    path('patients/delete/<int:id>/', views.delete_patient, name='delete_patient'),
+
+    path('appointments/', views.appointment_list, name='appointment_list'),
+    path('appointments/add/', views.add_appointment, name='add_appointment'),
+    path('appointments/complete/<int:id>/', views.complete_appointment, name='complete_appointment'),
+    path('appointments/cancel/<int:id>/', views.cancel_appointment, name='cancel_appointment'),
 ]
 ```
 
-Now the **final** project URLs. Replace the whole file:
+**What it does**
+- Each `path('url/', view_function, name='...')` connects a URL to a view.
+- `<int:id>` takes the number from the URL, for example `/patients/edit/3/`, and passes it to the view as `id=3`.
+- `name='patient_list'` lets you write `redirect('patient_list')` in views and `{% url 'patient_list' %}` in templates, instead of typing the path by hand.
 
-```python title="hms/urls.py"
+## 15. Final project urls.py
+
+Open `hospitalproject/urls.py` again and replace everything. It's the same as Step 10 with **one new line** at the bottom:
+
+```python title="hospitalproject/urls.py"
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from hospitalapp.api_views import DepartmentViewSet, DoctorViewSet, PatientViewSet, AppointmentViewSet
+
+router = DefaultRouter()
+router.register('departments', DepartmentViewSet, basename='department')
+router.register('doctors', DoctorViewSet, basename='doctor')
+router.register('patients', PatientViewSet, basename='patient')
+router.register('appointments', AppointmentViewSet, basename='appointment')
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/", include("hospital.urls")),
-    path("api-auth/", include("rest_framework.urls")),
-    path("accounts/", include("django.contrib.auth.urls")),  # login / logout pages
-    path("", include("hospital.web_urls")),
+    path('admin/', admin.site.urls),
+
+    # JWT login
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # All API URLs made by the router
+    path('api/', include(router.urls)),
+
+    # Login / logout links on the browsable API pages
+    path('api-auth/', include('rest_framework.urls')),
+
+    # Web pages (Part C)
+    path('', include('hospitalapp.urls')),   # <--- ADDED
 ]
 ```
 
-### Templates
+**What it does**
+- `path('', include('hospitalapp.urls'))` hands every other URL (`/`, `/login/`, `/patients/`...) to the app's `urls.py` from Step 14.
+- It goes **last**, so `/admin/` and `/api/` are matched first.
 
-Create a `templates` folder **next to `manage.py`** (not inside an app), with `registration` and `hospital` folders inside it.
+## 16. Templates
 
-```bash
-mkdir templates\registration, templates\hospital
-```
+All HTML files go in the `templates/` folder next to `manage.py` (the folder from Step 1). Every page **extends** one base page, so the menu and styles are written only once.
 
-The base layout uses [Pico CSS](https://picocss.com) from a CDN, so plain HTML looks clean without writing any CSS.
+### base.html
 
-```django title="templates/base.html"
-<!doctype html>
+```html title="templates/base.html"
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}HMS{% endblock %} · Hospital</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <style>
-    .badge { padding: 2px 8px; border-radius: 99px; font-size: .8rem; }
-    .SCHEDULED { background: #dbeafe; color: #1e40af; }
-    .COMPLETED { background: #dcfce7; color: #166534; }
-    .CANCELLED { background: #fee2e2; color: #991b1b; }
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
-    .stats article { margin: 0; text-align: center; }
-    .stats strong { font-size: 2rem; display: block; }
-    td form { margin: 0; display: inline; }
-    td button { padding: 4px 10px; margin: 0; font-size: .8rem; width: auto; }
-  </style>
+    <meta charset="UTF-8">
+    <title>Hospital Management</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f4f6f8; }
+        nav { background: #1f6feb; padding: 14px 20px; }
+        nav a { color: white; margin-right: 16px; text-decoration: none; font-weight: bold; }
+        .container { max-width: 1000px; margin: 20px auto; background: white; padding: 20px; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f0f0f0; }
+        input, select, textarea { width: 100%; padding: 8px; margin: 4px 0 12px; box-sizing: border-box; }
+        button { padding: 8px 16px; background: #1f6feb; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .danger { background: #d73a49; }
+        .error { color: #d73a49; font-weight: bold; }
+        .inline { display: inline; }
+        .box { display: inline-block; width: 200px; padding: 15px; margin: 5px; background: #eef4ff; border-radius: 8px; }
+        .box h2 { margin: 0; }
+    </style>
 </head>
 <body>
-  <header class="container">
     <nav>
-      <ul><li><strong>🏥 HMS</strong></li></ul>
-      {% if user.is_authenticated %}
-      <ul>
-        <li><a href="{% url 'dashboard' %}">Dashboard</a></li>
-        <li><a href="{% url 'patient_list' %}">Patients</a></li>
-        {% if user.is_admin_role or user.is_receptionist %}
-          <li><a href="{% url 'appointment_create' %}">Book</a></li>
+        {% if user.is_authenticated %}
+            <a href="{% url 'dashboard' %}">Dashboard</a>
+            <a href="{% url 'patient_list' %}">Patients</a>
+            <a href="{% url 'appointment_list' %}">Appointments</a>
+            {% if user.is_superuser %}
+                <a href="/admin/">Admin Panel</a>
+            {% endif %}
+            <a href="{% url 'logout' %}">Logout ({{ user.username }})</a>
+        {% else %}
+            <a href="{% url 'login' %}">Login</a>
         {% endif %}
-        <li><a href="/api/">API</a></li>
-        <li>
-          <form method="post" action="{% url 'logout' %}" style="margin:0">
-            {% csrf_token %}
-            <button type="submit" class="secondary outline" style="padding:4px 12px">
-              Logout ({{ user.username }})
-            </button>
-          </form>
-        </li>
-      </ul>
-      {% endif %}
     </nav>
-  </header>
-  <main class="container">
-    {% for message in messages %}
-      <article style="padding:.75rem 1rem">{{ message }}</article>
-    {% endfor %}
-    {% block content %}{% endblock %}
-  </main>
+
+    <div class="container">
+        {% block content %}
+        {% endblock %}
+    </div>
 </body>
 </html>
 ```
 
-```django title="templates/registration/login.html"
-{% extends "base.html" %}
-{% block title %}Login{% endblock %}
+**What it does**
+- This is the **layout** shared by every page: the top menu plus a white box in the middle.
+- `{% block content %}{% endblock %}` is an empty slot. Each page fills it with its own HTML.
+- `user` is always available in templates. `user.is_authenticated` hides the menu links when nobody is logged in. `user.is_superuser` shows the Admin Panel link only to the admin.
+- `{% url 'dashboard' %}` turns a URL **name** from Step 14 into the real path (`/`).
+- The `<style>` block is plain CSS so the pages don't look bare. You can skip it in a hurry.
+
+### login.html
+
+```html title="templates/login.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article style="max-width:420px;margin:3rem auto">
-  <h2>Staff login</h2>
-  {% if form.errors %}<p style="color:#b91c1c">Wrong username or password.</p>{% endif %}
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <input type="hidden" name="next" value="{{ next }}">
-    <button type="submit">Log in</button>
-  </form>
-  <small>Demo: admin/admin123 · reception/pass1234 · dr_mehta/pass1234</small>
-</article>
+    <h2>Login</h2>
+    <form method="POST">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Login</button>
+    </form>
 {% endblock %}
 ```
 
-```django title="templates/hospital/dashboard.html"
-{% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
+**What it does**
+- `{% extends 'base.html' %}` means "use base.html and put my `content` block into its slot".
+- `{{ form.as_p }}` prints the `AuthenticationForm` from the view: username and password inputs, plus an error if the login is wrong.
+- `{% csrf_token %}` is **required in every POST form**. It adds a hidden security code. Without it Django returns **403 CSRF verification failed**.
+
+### dashboard.html
+
+```html title="templates/dashboard.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<h2>Good day, {{ user.first_name|default:user.username }}</h2>
-<p>{{ user.get_role_display }} · {{ today|date:"l, d M Y" }}</p>
+    <h2>Dashboard</h2>
+    <p>Welcome, {{ user.username }}</p>
 
-<section class="stats">
-  {% for label, value in stats.items %}
-    <article><strong>{{ value }}</strong>{{ label }}</article>
-  {% endfor %}
-</section>
+    <div class="box"><p>Patients</p><h2>{{ total_patients }}</h2></div>
+    <div class="box"><p>Doctors</p><h2>{{ total_doctors }}</h2></div>
+    <div class="box"><p>All appointments</p><h2>{{ total_appointments }}</h2></div>
+    <div class="box"><p>Scheduled</p><h2>{{ scheduled_count }}</h2></div>
 
-<h3>Today's appointments</h3>
-<figure>
-<table>
-  <thead>
-    <tr><th>Time</th><th>Patient</th><th>Doctor</th><th>Reason</th><th>Status</th><th></th></tr>
-  </thead>
-  <tbody>
-  {% for a in appointments %}
-    <tr>
-      <td>{{ a.time|time:"H:i" }}</td>
-      <td><a href="{% url 'patient_detail' a.patient.pk %}">{{ a.patient.full_name }}</a></td>
-      <td>{{ a.doctor }}</td>
-      <td>{{ a.reason }}</td>
-      <td><span class="badge {{ a.status }}">{{ a.get_status_display }}</span></td>
-      <td>
-        {% if a.status == "SCHEDULED" %}
-          {% if user.is_doctor or user.is_admin_role %}
-          <form method="post" action="{% url 'appointment_status' a.pk 'complete' %}">
-            {% csrf_token %}<button>Complete</button>
-          </form>
-          {% endif %}
-          {% if user.is_receptionist or user.is_admin_role %}
-          <form method="post" action="{% url 'appointment_status' a.pk 'cancel' %}">
-            {% csrf_token %}<button class="secondary">Cancel</button>
-          </form>
-          {% endif %}
-        {% endif %}
-      </td>
-    </tr>
-  {% empty %}
-    <tr><td colspan="6">No appointments today.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</figure>
-{% endblock %}
-```
-
-```django title="templates/hospital/patient_list.html"
-{% extends "base.html" %}
-{% block title %}Patients{% endblock %}
-{% block content %}
-<div style="display:flex;justify-content:space-between;align-items:center">
-  <h2>Patients</h2>
-  {% if user.is_admin_role or user.is_receptionist %}
-    <a href="{% url 'patient_create' %}" role="button">+ New patient</a>
-  {% endif %}
-</div>
-
-<form method="get" role="search">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search name or phone">
-  <button type="submit">Search</button>
-</form>
-
-<table>
-  <thead><tr><th>Name</th><th>Gender</th><th>Age</th><th>Blood</th><th>Phone</th></tr></thead>
-  <tbody>
-  {% for p in page %}
-    <tr>
-      <td><a href="{% url 'patient_detail' p.pk %}">{{ p.full_name }}</a></td>
-      <td>{{ p.get_gender_display }}</td>
-      <td>{{ p.age }}</td>
-      <td>{{ p.blood_group|default:"—" }}</td>
-      <td>{{ p.phone }}</td>
-    </tr>
-  {% empty %}
-    <tr><td colspan="5">No patients found.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-
-<nav>
-  <ul>
-    {% if page.has_previous %}<li><a href="?q={{ q }}&page={{ page.previous_page_number }}">← Prev</a></li>{% endif %}
-    <li>Page {{ page.number }} of {{ page.paginator.num_pages }}</li>
-    {% if page.has_next %}<li><a href="?q={{ q }}&page={{ page.next_page_number }}">Next →</a></li>{% endif %}
-  </ul>
-</nav>
-{% endblock %}
-```
-
-```django title="templates/hospital/patient_form.html"
-{% extends "base.html" %}
-{% block title %}{% if patient %}Edit{% else %}New{% endif %} patient{% endblock %}
-{% block content %}
-<article>
-  <h2>{% if patient %}Edit {{ patient.full_name }}{% else %}New patient{% endif %}</h2>
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Save</button>
-  </form>
-</article>
-{% endblock %}
-```
-
-```django title="templates/hospital/patient_detail.html"
-{% extends "base.html" %}
-{% block title %}{{ patient.full_name }}{% endblock %}
-{% block content %}
-<article>
-  <h2>{{ patient.full_name }}</h2>
-  <p>
-    {{ patient.get_gender_display }} · {{ patient.age }} yrs · Blood {{ patient.blood_group|default:"?" }}<br>
-    📞 {{ patient.phone }} {% if patient.email %}· ✉ {{ patient.email }}{% endif %}
-  </p>
-  {% if user.is_admin_role or user.is_receptionist %}
-    <a href="{% url 'patient_edit' patient.pk %}" role="button" class="secondary">Edit</a>
-    <a href="{% url 'appointment_create' %}?patient={{ patient.pk }}" role="button">Book appointment</a>
-  {% endif %}
-</article>
-
-<h3>Visit history</h3>
-{% for v in visits %}
-  <article>
-    <header>
-      <strong>{{ v.date|date:"d M Y" }} {{ v.time|time:"H:i" }}</strong> · {{ v.doctor }}
-      <span class="badge {{ v.status }}">{{ v.get_status_display }}</span>
-    </header>
-    <p><em>{{ v.reason }}</em></p>
-    {% if v.prescription %}
-      <p><strong>Diagnosis:</strong> {{ v.prescription.diagnosis }}</p>
-      <p><strong>Medicines:</strong><br>{{ v.prescription.medicines|linebreaksbr }}</p>
-      {% if v.prescription.advice %}<p><strong>Advice:</strong> {{ v.prescription.advice }}</p>{% endif %}
+    <h3>Today's appointments</h3>
+    {% if todays_appointments %}
+        <table>
+            <tr>
+                <th>Time</th>
+                <th>Patient</th>
+                <th>Doctor</th>
+                <th>Reason</th>
+                <th>Status</th>
+            </tr>
+            {% for appointment in todays_appointments %}
+            <tr>
+                <td>{{ appointment.time }}</td>
+                <td>{{ appointment.patient.name }}</td>
+                <td>Dr. {{ appointment.doctor.name }}</td>
+                <td>{{ appointment.reason }}</td>
+                <td>{{ appointment.get_status_display }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No appointments today.</p>
     {% endif %}
-  </article>
-{% empty %}
-  <p>No visits yet.</p>
-{% endfor %}
 {% endblock %}
 ```
 
-```django title="templates/hospital/appointment_form.html"
-{% extends "base.html" %}
-{% block title %}Book appointment{% endblock %}
+**What it does**
+- `{{ total_patients }}` prints the values from the view's `context` dictionary.
+- `{% for appointment in todays_appointments %}` loops over the rows.
+- `appointment.patient.name` follows the foreign key to the patient and prints the name.
+- `get_status_display` prints the **label** of a choice ("Scheduled") instead of the stored value ("scheduled"). Django creates `get_<field>_display` for every field with `choices`.
+
+### patient_list.html
+
+```html title="templates/patient_list.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article>
-  <h2>Book appointment</h2>
-  <form method="post">
-    {% csrf_token %}
-    {{ form.non_field_errors }}
-    {{ form.as_p }}
-    <button type="submit">Book</button>
-  </form>
-</article>
+    <h2>Patients</h2>
+
+    <form method="GET" action="{% url 'patient_list' %}">
+        <input type="text" name="search" value="{{ search }}" placeholder="Search by name">
+        <button type="submit">Search</button>
+    </form>
+
+    {% if can_edit %}
+        <p><a href="{% url 'add_patient' %}">+ Add New Patient</a></p>
+    {% endif %}
+
+    {% if patients %}
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Age</th>
+                <th>Gender</th>
+                <th>Phone</th>
+                <th>Blood Group</th>
+                {% if can_edit %}<th>Actions</th>{% endif %}
+            </tr>
+            {% for patient in patients %}
+            <tr>
+                <td>{{ patient.name }}</td>
+                <td>{{ patient.age }}</td>
+                <td>{{ patient.get_gender_display }}</td>
+                <td>{{ patient.phone }}</td>
+                <td>{{ patient.blood_group }}</td>
+                {% if can_edit %}
+                <td>
+                    <a href="{% url 'edit_patient' patient.id %}">Edit</a>
+                    <form method="POST" action="{% url 'delete_patient' patient.id %}" class="inline"
+                          onsubmit="return confirm('Delete this patient?')">
+                        {% csrf_token %}
+                        <button type="submit" class="danger">Delete</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No patients found.</p>
+    {% endif %}
 {% endblock %}
 ```
+
+**What it does**
+- The search form uses **GET**, so the search text ends up in the URL (`/patients/?search=amit`). The view reads it with `request.GET.get('search')`.
+- `value="{{ search }}"` keeps the typed text in the box after searching.
+- `{% if can_edit %}` hides the Add, Edit and Delete buttons from doctors.
+- `{% url 'edit_patient' patient.id %}` builds `/patients/edit/3/`. The second value fills the `<int:id>` part.
+- Delete is a small **POST form** with `{% csrf_token %}`. `confirm(...)` shows a browser "Are you sure?" popup first.
+
+### add_patient.html
+
+```html title="templates/add_patient.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Add Patient</h2>
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Name</label>
+        <input type="text" name="name" required>
+
+        <label>Age</label>
+        <input type="number" name="age" min="0" max="120" required>
+
+        <label>Gender</label>
+        <select name="gender" required>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+        </select>
+
+        <label>Phone</label>
+        <input type="text" name="phone" maxlength="10" required>
+
+        <label>Blood Group</label>
+        <select name="blood_group">
+            <option value="">-- Not known --</option>
+            <option value="A+">A+</option>
+            <option value="A-">A-</option>
+            <option value="B+">B+</option>
+            <option value="B-">B-</option>
+            <option value="O+">O+</option>
+            <option value="O-">O-</option>
+            <option value="AB+">AB+</option>
+            <option value="AB-">AB-</option>
+        </select>
+
+        <label>Address</label>
+        <textarea name="address" rows="3"></textarea>
+
+        <button type="submit">Save Patient</button>
+    </form>
+{% endblock %}
+```
+
+**What it does**
+- Every input has a `name` that **matches** `request.POST.get('name')`, `request.POST.get('age')` and so on in the view. If the names don't match, the view gets `None`.
+- `<option value="male">` must use the **value** from `GENDER_CHOICES` in the model (`'male'`, not `'Male'`).
+- `required`, `min`, `max` and `maxlength` are browser checks, so the user can't submit an empty name or an age of 500.
+- `method="POST"` with no `action` sends the form back to the same URL, `/patients/add/`.
+
+### edit_patient.html
+
+```html title="templates/edit_patient.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Edit Patient</h2>
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Name</label>
+        <input type="text" name="name" value="{{ patient.name }}" required>
+
+        <label>Age</label>
+        <input type="number" name="age" value="{{ patient.age }}" min="0" max="120" required>
+
+        <label>Gender</label>
+        <select name="gender" required>
+            <option value="male" {% if patient.gender == 'male' %}selected{% endif %}>Male</option>
+            <option value="female" {% if patient.gender == 'female' %}selected{% endif %}>Female</option>
+            <option value="other" {% if patient.gender == 'other' %}selected{% endif %}>Other</option>
+        </select>
+
+        <label>Phone</label>
+        <input type="text" name="phone" value="{{ patient.phone }}" maxlength="10" required>
+
+        <label>Blood Group</label>
+        <select name="blood_group">
+            <option value="">-- Not known --</option>
+            <option value="A+" {% if patient.blood_group == 'A+' %}selected{% endif %}>A+</option>
+            <option value="A-" {% if patient.blood_group == 'A-' %}selected{% endif %}>A-</option>
+            <option value="B+" {% if patient.blood_group == 'B+' %}selected{% endif %}>B+</option>
+            <option value="B-" {% if patient.blood_group == 'B-' %}selected{% endif %}>B-</option>
+            <option value="O+" {% if patient.blood_group == 'O+' %}selected{% endif %}>O+</option>
+            <option value="O-" {% if patient.blood_group == 'O-' %}selected{% endif %}>O-</option>
+            <option value="AB+" {% if patient.blood_group == 'AB+' %}selected{% endif %}>AB+</option>
+            <option value="AB-" {% if patient.blood_group == 'AB-' %}selected{% endif %}>AB-</option>
+        </select>
+
+        <label>Address</label>
+        <textarea name="address" rows="3">{{ patient.address }}</textarea>
+
+        <button type="submit">Update Patient</button>
+    </form>
+{% endblock %}
+```
+
+**What it does**
+- It's the same form as Add, but every input starts **filled in** with the current values (`value="{{ patient.name }}"`).
+- `{% if patient.gender == 'male' %}selected{% endif %}` pre-selects the saved option in the dropdown.
+- A `<textarea>` has no `value` attribute. The text goes **between** the tags.
+
+### appointment_list.html
+
+```html title="templates/appointment_list.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Appointments</h2>
+
+    <p>
+        Filter:
+        <a href="{% url 'appointment_list' %}">All</a> |
+        <a href="?status=scheduled">Scheduled</a> |
+        <a href="?status=completed">Completed</a> |
+        <a href="?status=cancelled">Cancelled</a>
+    </p>
+
+    {% if can_edit %}
+        <p><a href="{% url 'add_appointment' %}">+ Book Appointment</a></p>
+    {% endif %}
+
+    {% if appointments %}
+        <table>
+            <tr>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Patient</th>
+                <th>Doctor</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Notes</th>
+                <th>Actions</th>
+            </tr>
+            {% for appointment in appointments %}
+            <tr>
+                <td>{{ appointment.date }}</td>
+                <td>{{ appointment.time }}</td>
+                <td>{{ appointment.patient.name }}</td>
+                <td>Dr. {{ appointment.doctor.name }}</td>
+                <td>{{ appointment.reason }}</td>
+                <td>{{ appointment.get_status_display }}</td>
+                <td>{{ appointment.notes }}</td>
+                <td>
+                    {% if appointment.status == 'scheduled' %}
+                        <a href="{% url 'complete_appointment' appointment.id %}">Complete</a>
+                        {% if can_edit %}
+                            <form method="POST" action="{% url 'cancel_appointment' appointment.id %}" class="inline"
+                                  onsubmit="return confirm('Cancel this appointment?')">
+                                {% csrf_token %}
+                                <button type="submit" class="danger">Cancel</button>
+                            </form>
+                        {% endif %}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No appointments found.</p>
+    {% endif %}
+{% endblock %}
+```
+
+**What it does**
+- The filter links add `?status=...` to the URL. The view reads it with `request.GET.get('status')`.
+- The **Complete** and **Cancel** actions only show while the appointment is still `scheduled`.
+- **Cancel** is a POST form (it changes data). **Complete** is a normal link because it opens a page with a notes box first.
+
+### add_appointment.html
+
+```html title="templates/add_appointment.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Book Appointment</h2>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Patient</label>
+        <select name="patient" required>
+            {% for patient in patients %}
+                <option value="{{ patient.id }}">{{ patient.name }} ({{ patient.phone }})</option>
+            {% endfor %}
+        </select>
+
+        <label>Doctor</label>
+        <select name="doctor" required>
+            {% for doctor in doctors %}
+                <option value="{{ doctor.id }}">Dr. {{ doctor.name }} - {{ doctor.specialization }} (Rs. {{ doctor.fee }})</option>
+            {% endfor %}
+        </select>
+
+        <label>Date</label>
+        <input type="date" name="date" required>
+
+        <label>Time</label>
+        <input type="time" name="time" required>
+
+        <label>Reason</label>
+        <input type="text" name="reason" required>
+
+        <button type="submit">Book</button>
+    </form>
+{% endblock %}
+```
+
+**What it does**
+- The dropdowns are built with a `{% for %}` loop over the `patients` and `doctors` the view sent.
+- `value="{{ patient.id }}"` means the form sends the **id**. The view saves it with `patient_id=...`.
+- `type="date"` and `type="time"` show a date picker and a time picker. They send text like `2030-01-15` and `10:30`.
+- `{% if error %}` shows the double-booking or past-date message from the view.
+
+### complete_appointment.html
+
+```html title="templates/complete_appointment.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Complete Appointment</h2>
+
+    <p><b>Patient:</b> {{ appointment.patient.name }} ({{ appointment.patient.age }} yrs, {{ appointment.patient.get_gender_display }})</p>
+    <p><b>Doctor:</b> Dr. {{ appointment.doctor.name }}</p>
+    <p><b>Date:</b> {{ appointment.date }} at {{ appointment.time }}</p>
+    <p><b>Reason:</b> {{ appointment.reason }}</p>
+
+    <form method="POST">
+        {% csrf_token %}
+        <label>Diagnosis / medicines / advice</label>
+        <textarea name="notes" rows="5" required>{{ appointment.notes }}</textarea>
+        <button type="submit">Mark as Completed</button>
+    </form>
+{% endblock %}
+```
+
+**What it does**
+- Shows the appointment details, then a notes box.
+- Submitting sends POST to the same URL. The view saves `notes` and sets the status to `completed`.
+
+## 17. Run and check everything
 
 ```bash
 python manage.py runserver
 ```
 
-Open <http://127.0.0.1:8000/>. You're sent to the login page. Log in as `reception` / `pass1234`, add a patient and book an appointment. Then log out, log in as `dr_mehta` and complete it. **Checkpoint 3:** API plus UI.
+Open `http://127.0.0.1:8000/` and go through this checklist:
 
-## 14. Automated tests
+1. You're sent to `/login/` because the dashboard has `@login_required`.
+2. Log in as `reception1`. You see the dashboard with the counts.
+3. **Patients** → add a patient, search for them, edit them, then delete.
+4. **Appointments** → book one for Dr. Mehta. Book the **same** doctor, date and time again, and you see the red double-booking error.
+5. Log out and log in as `drmehta`. **Appointments** shows only Dr. Mehta's. Click **Complete**, write notes and save.
+6. As `drmehta`, the Patients page has **no** Add, Edit or Delete buttons.
+7. Log in as the admin. The **Admin Panel** link appears in the menu.
 
-```python title="hospital/tests.py"
-import datetime as dt
+> [!TIP] Done
+> You now have models, admin, a JWT-protected REST API with three roles, and web pages with login. That's a complete hospital management system.
 
-from django.contrib.auth import get_user_model
-from django.urls import reverse
-from django.utils import timezone
-from rest_framework import status
-from rest_framework.test import APITestCase
+## 18. Explain it in the interview
 
-from .models import Appointment, Department, Doctor, Patient
-
-User = get_user_model()
-
-
-class HospitalAPITests(APITestCase):
-    def setUp(self):
-        self.reception = User.objects.create_user("rec", password="pass1234", role=User.Role.RECEPTIONIST)
-        doc_user = User.objects.create_user("doc", password="pass1234", role=User.Role.DOCTOR, first_name="Asha")
-        other_user = User.objects.create_user("doc2", password="pass1234", role=User.Role.DOCTOR)
-        dept = Department.objects.create(name="Cardiology")
-        self.doctor = Doctor.objects.create(user=doc_user, department=dept, specialization="Cardio", phone="9000000001")
-        self.other = Doctor.objects.create(user=other_user, department=dept, specialization="Cardio", phone="9000000002")
-        self.patient = Patient.objects.create(
-            first_name="Ravi", last_name="Kumar", gender="M", date_of_birth="1990-05-01", phone="9876543210"
-        )
-        self.tomorrow = timezone.localdate() + dt.timedelta(days=1)
-
-    def login(self, username):
-        res = self.client.post(reverse("token_obtain_pair"), {"username": username, "password": "pass1234"})
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
-        return res
-
-    def book(self, **overrides):
-        data = {
-            "patient": self.patient.id, "doctor": self.doctor.id,
-            "date": str(self.tomorrow), "time": "10:00", "reason": "Chest pain", **overrides,
-        }
-        return self.client.post(reverse("appointment-list"), data)
-
-    def test_login_returns_tokens_and_role(self):
-        res = self.login("rec")
-        self.assertIn("access", res.data)
-        self.assertIn("refresh", res.data)
-        self.assertEqual(res.data["user"]["role"], "RECEPTIONIST")
-
-    def test_anonymous_is_rejected(self):
-        res = self.client.get(reverse("patient-list"))
-        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_receptionist_can_book(self):
-        self.login("rec")
-        res = self.book()
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(res.data["status"], "SCHEDULED")
-
-    def test_double_booking_is_rejected(self):
-        self.login("rec")
-        self.book()
-        res = self.book()
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_past_date_is_rejected(self):
-        self.login("rec")
-        res = self.book(date=str(timezone.localdate() - dt.timedelta(days=1)))
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("date", res.data)
-
-    def test_doctor_sees_only_own_appointments(self):
-        Appointment.objects.create(patient=self.patient, doctor=self.doctor, date=self.tomorrow, time=dt.time(10), reason="a")
-        Appointment.objects.create(patient=self.patient, doctor=self.other, date=self.tomorrow, time=dt.time(11), reason="b")
-        self.login("doc")
-        res = self.client.get(reverse("appointment-list"))
-        self.assertEqual(res.data["count"], 1)
-
-    def test_doctor_cannot_create_patient(self):
-        self.login("doc")
-        res = self.client.post(reverse("patient-list"), {
-            "first_name": "X", "last_name": "Y", "gender": "M", "date_of_birth": "2000-01-01", "phone": "9999999999",
-        })
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_prescription_completes_appointment(self):
-        appt = Appointment.objects.create(patient=self.patient, doctor=self.doctor, date=self.tomorrow, time=dt.time(10), reason="a")
-        self.login("doc")
-        res = self.client.post(reverse("prescription-list"), {
-            "appointment": appt.id, "diagnosis": "Flu", "medicines": "Paracetamol",
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        appt.refresh_from_db()
-        self.assertEqual(appt.status, Appointment.Status.COMPLETED)
-```
-
-```bash
-python manage.py test
-```
-
-Expected: `Ran 8 tests ... OK`.
-
-Save your dependencies:
-
-```bash
-pip freeze > requirements.txt
-```
-
-## 15. Explain it like a pro (interview answers)
-
-### Request flow for `POST /api/appointments/`
+**"Walk me through what happens when Postman books an appointment."**
 
 ```flow
-urls.py | the router maps /api/appointments/ to AppointmentViewSet, action create
-Authentication | JWTAuthentication reads the Bearer token and sets request.user
-Permissions | IsFrontDeskOrReadOnly: is this user admin or receptionist?
-Serializer | AppointmentSerializer(data=request.data).is_valid(): field checks, then validate()
-perform_create | serializer.save(created_by=request.user) runs INSERT via the ORM
-Response | serializer.data as JSON with 201 Created
+POST /api/appointments/ | Postman sends JSON + Authorization: Bearer <token>
+urls.py | the router sends it to AppointmentViewSet → create
+JWTAuthentication | reads the token, sets request.user = reception1
+AppointmentPermission | POST + receptionist → allowed (else 403)
+AppointmentSerializer | validate_date, then validate() checks double booking (else 400)
+serializer.save() | the new row is inserted into the Appointment table
+Response | 201 Created + the appointment as JSON
 ```
 
-### Likely questions
+**Questions you may get**
 
-**Q: What's the difference between `APIView`, generic views and `ViewSet`?**
-`APIView` is the lowest level: you write `get()` and `post()` yourself. Generic views (`ListCreateAPIView`) add the queryset, serializer and pagination wiring. A `ViewSet` groups all CRUD actions in one class, and a router generates the URLs for it.
-
-**Q: Why JWT and not sessions?**
-JWT is stateless. The server doesn't store sessions, it only verifies the token signature. That suits mobile and SPA clients and multiple servers. The access token is short-lived (60 min) to limit damage if it's stolen. The refresh token (1 day) gets new access tokens. Logout blacklists the refresh token.
-
-**Q: What's inside a JWT?**
-Three base64 parts: `header.payload.signature`. Our payload has `user_id`, `exp`, `role` and `username`. It's **signed, not encrypted**, so never put secrets in it.
-
-**Q: Where does validation happen?**
-Three levels. Field level (`validate_phone`), object level (`validate()` for double booking across doctor + date + time), and model/DB level (`unique=True` on phone, `OneToOneField` on prescription).
-
-**Q: How do you stop a doctor from seeing other doctors' data?**
-Two layers: `get_queryset()` filters by `request.user`, and permission classes check the role. The doctor gets a 404 for other doctors' records, so we don't even reveal that they exist.
-
-**Q: What's the N+1 problem?**
-Listing 10 appointments and reading `appointment.doctor.user` would fire 1 + 10 + 10 queries. `select_related("doctor__user")` turns that into a single JOIN query. For reverse FK or many-to-many, use `prefetch_related`.
-
-**Q: `annotate` vs `aggregate`?**
-`aggregate` returns **one** dict for the whole queryset, e.g. total revenue. `annotate` adds a computed value **to each row**, e.g. `doctor_count` per department.
-
-## 16. Common errors and fixes
-
-| Error | Fix |
+| Question | Short answer |
 |---|---|
-| `No module named 'rest_framework_simplejwt'` | venv not active, or package not installed. Run `pip install djangorestframework-simplejwt` |
-| `ValueError: Dependency on app with no migrations: accounts` | Run `python manage.py makemigrations accounts hospital` |
-| `InconsistentMigrationHistory ... admin.0001_initial` | You ran `migrate` before creating the custom User. Delete `db.sqlite3` and the migration files (keep `__init__.py`), then migrate again |
-| `401 Authentication credentials were not provided` | Missing header `Authorization: Bearer <access>` |
-| `401 Given token not valid` | Access token expired. Call `/api/auth/refresh/` or log in again |
-| `403 You do not have permission` | Your role isn't allowed. Check which user you logged in as |
-| `TemplateDoesNotExist: registration/login.html` | `templates/` must sit next to `manage.py`, and `DIRS` must be `[BASE_DIR / "templates"]` |
-| `405 Method "GET" not allowed` on logout | Django 5 logout must be a POST form (already done in `base.html`) |
-| `AssertionError: basename argument not specified` | ViewSets without `queryset` need `basename=` in `router.register` |
+| What is a serializer? | It converts model objects to JSON and back, and validates input. It's like a ModelForm for APIs. |
+| `Serializer` vs `ModelSerializer`? | `Serializer`: you write every field yourself. `ModelSerializer`: fields come from the model automatically. |
+| `validate_<field>` vs `validate`? | `validate_<field>` checks one field. `validate` checks several fields together (doctor + date + time). |
+| What does `ModelViewSet` give you? | list, create, retrieve, update, partial_update and destroy in one class. |
+| What does the router do? | It makes the URLs for a viewset automatically: `/patients/` and `/patients/<id>/`. |
+| `queryset` vs `get_queryset()`? | `queryset` is fixed. `get_queryset()` can change per request, for example a doctor sees only their own rows. |
+| What is JWT? | A signed token given at login. The client sends it in the `Authorization: Bearer` header on every request, so the server needs no session. |
+| Access vs refresh token? | Access is short-lived and used on every request. Refresh is longer-lived and only used to get a new access token. |
+| 401 vs 403? | 401 = not logged in or bad token. 403 = logged in but not allowed. |
+| How do you do roles? | Separate `Doctor` and `Receptionist` tables linked to `User`, plus custom `BasePermission` classes that check those tables. |
+| Why `{% csrf_token %}`? | It stops other websites from submitting forms as you. Django rejects POST forms without it. |
+| ForeignKey vs OneToOneField? | ForeignKey = many-to-one (many appointments → one doctor). OneToOne = exactly one each (one user ↔ one doctor). |
+| `CASCADE` vs `SET_NULL`? | CASCADE deletes the child rows too. SET_NULL keeps them and empties the link (needs `null=True`). |
 
-## 17. If they ask for one more feature
+## 19. Common errors and fixes
 
-**Allow a React/Angular front end (CORS):**
-
-```bash
-pip install django-cors-headers
-```
-
-```python title="hms/settings.py — CORS"
-INSTALLED_APPS += ["corsheaders"]
-MIDDLEWARE.insert(0, "corsheaders.middleware.CorsMiddleware")
-CORS_ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
-```
-
-**Swagger / OpenAPI docs:**
-
-```bash
-pip install drf-spectacular
-```
-
-```python title="hms/settings.py — API docs"
-INSTALLED_APPS += ["drf_spectacular"]
-REST_FRAMEWORK["DEFAULT_SCHEMA_CLASS"] = "drf_spectacular.openapi.AutoSchema"
-```
-
-```python title="hms/urls.py — add to urlpatterns"
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-
-urlpatterns += [
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
-]
-```
-
-**Switch to PostgreSQL/MySQL:**
-
-```bash
-pip install psycopg[binary]
-```
-
-```python title="hms/settings.py — DATABASES"
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",   # or "django.db.backends.mysql" (pip install mysqlclient)
-        "NAME": "hms",
-        "USER": "postgres",
-        "PASSWORD": "postgres",
-        "HOST": "localhost",
-        "PORT": "5432",
-    }
-}
-```
-
-**Billing (sketch):** add a `Bill` model with `appointment = OneToOneField(Appointment)`, `amount = DecimalField`, `is_paid = BooleanField`. Create it in `PrescriptionViewSet.perform_create` using `amount=appointment.doctor.consultation_fee`. Expose it with a `BillViewSet` and a `@action(detail=True, methods=["post"]) def pay(...)`. Same pattern as cancel/complete.
+| Error | Cause | Fix |
+|---|---|---|
+| `No module named 'rest_framework_simplejwt'` | Package not installed, or the venv isn't active | Activate the venv, then `pip install djangorestframework-simplejwt` |
+| `no such table: hospitalapp_patient` | Migrations not run | `python manage.py makemigrations` then `python manage.py migrate` |
+| `TemplateDoesNotExist: dashboard.html` | `DIRS` not set, or the file is in the wrong folder | Check Step 2, and keep `templates/` next to `manage.py` |
+| `NoReverseMatch: Reverse for 'patient_list' not found` | URL name typo, or app URLs not included | Check `name=` in Step 14 and the last line of Step 15 |
+| `CSRF verification failed` (403) | A POST form without `{% csrf_token %}` | Add `{% csrf_token %}` inside the `<form>` |
+| Postman: *Authentication credentials were not provided* | No token, or the `REST_FRAMEWORK` block is missing | Use Bearer Token in Postman, and check Step 11 |
+| Postman: *Token is invalid or expired* | The access token is older than 5 minutes | Call `/api/token/refresh/` or log in again |
+| `basename` argument not specified | A viewset has `get_queryset` but no `queryset` | Add `basename='...'` to `router.register` |
+| Doctor gets 404 for an appointment | That appointment belongs to another doctor | This is correct, because `get_queryset` hides it |
+| `Invalid pk "5" - object does not exist.` | You sent a `patient` or `doctor` id that isn't in the database | `GET /api/patients/` first and use a real id |

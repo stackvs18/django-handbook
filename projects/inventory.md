@@ -1,1942 +1,1641 @@
-You will build an **Inventory & Sales Management System (IMS)** from an empty folder. It covers products, suppliers, customers, purchases (stock in), sales with GST invoices (stock out), a full stock audit log, low-stock alerts and reports. You get a JWT-secured REST API plus a server-rendered dashboard. Every file is shown in full, ready to copy.
+You will build an **Inventory Management System** step by step, the same way you built the Player project in class:
+
+**project → app → settings → models → migrations → admin → serializers → viewsets → router → JWT → Postman → web pages**
+
+Every file is shown **in full**. Click **Copy**, paste it into VS Code, save. After every block there is a short note on **what the code does** and **how it is used**, so you can explain it to the interviewer.
 
 > [!TIP] How to use this page in a practical test
-> Go top to bottom. Every step ends with something that runs. Steps 1–9 are the **must-haves** (models, CRUD API, JWT). Steps 10+ are the **extras** that make you stand out: atomic stock updates, nested sales, reports, a UI and tests.
+> Go top to bottom. Every step ends with something you can run.
+> - **Part A (Steps 1–6):** project, models, admin. You can already add data in `/admin/`.
+> - **Part B (Steps 7–12):** REST API with serializers, viewsets, router, register, JWT and permissions. Test it in Postman.
+> - **Part C (Steps 13–17):** normal Django web pages (MVT) with signup, login, products and stock in/out.
+>
+> If the test only asks for an API, stop after Part B. If it only asks for web pages, do Part A and then Part C.
 
-> [!NOTE] Where the design comes from
-> The shape follows a typical open-source Django inventory app (for example [munuhee/sales-and-inventory-management](https://github.com/munuhee/sales-and-inventory-management): Category, Item, Vendor, Customer, Sale + SaleDetail with tax and grand total, Purchase, Invoice). It's simplified to what an intern practical expects. We left out slugs, image uploads and extra packages. We added the parts examiners like: a REST API, JWT, and **stock that can never go negative**.
+> [!NOTE] Where the idea comes from
+> Open-source inventory apps (for example [munuhee/sales-and-inventory-management](https://github.com/munuhee/sales-and-inventory-management)) have categories, items, vendors, and stock that goes up on a purchase and down on a sale. We kept only those basic ideas and wrote everything in the simple style from class: plain `models.Model`, choices written by hand, function-based web views and `ModelViewSet` for the API.
 
-## 0. Game plan for the practical
+## 0. What we're building
 
-| Time | Step | You can show |
+**Who uses the system.** No custom user model is needed. Django's `User` already has an `is_staff` tick box, and we use that.
+
+| User | How we know | Can do |
 |---|---|---|
-| 0–10 min | Setup and settings | `runserver` works |
-| 10–30 min | Models, migrations, admin | Data entry in `/admin/` |
-| 30–55 min | Serializers + ViewSets + URLs | CRUD API in the browser |
-| 55–70 min | JWT register/login + permissions | Postman with a `Bearer` token |
-| 70–90 min | Stock service: purchases, sales, movements | Stock changes correctly, can't oversell |
-| 90–110 min | Reports, seed data, templates | Dashboard and invoice page |
-| 110+ min | Tests | `python manage.py test` passes |
+| **Manager** | `user.is_staff` is `True` (the superuser is staff too) | Everything: categories, suppliers, products |
+| **Worker** | Any other logged-in user | View products, record **stock in** and **stock out** |
 
-## 1. What we're building
-
-**Users**
-
-| User | Can do |
-|---|---|
-| **Admin / manager** (`is_staff=True`) | Manage categories, suppliers, products and purchases |
-| **Staff** (any logged-in user) | View everything, record sales, add customers, adjust stock |
-
-**Data model**
+**Tables (models)**
 
 ```flow
-Category | groups products (Electronics, Stationery…)
-Supplier | who we buy from (a vendor)
-Customer | who we sell to (optional, since walk-in sales are allowed)
-Product | SKU, cost price, selling price, quantity, reorder level
-StockMovement | audit log: every IN/OUT with balance after, who and why
-Purchase | buy N units from a supplier; when RECEIVED, stock goes IN
-Sale + SaleItem | one bill with many lines, GST tax, grand total; stock goes OUT
+Category | Electronics, Stationery… one category has many products
+Supplier | who we buy from: name, phone, email
+Product | name, SKU code, price, quantity in stock, reorder level
+StockTransaction | product + in/out + quantity, who did it and when
 ```
 
-> [!IMPORTANT] The one rule that makes this project good
-> `Product.quantity` is **never edited directly**. It only changes through one function, `record_movement()`. That function locks the row, refuses to go below zero, and writes an audit entry. Explain this in the interview.
+**The one rule that makes it an inventory system:** a product's `quantity` is **never typed in by hand**. It only changes through a stock transaction:
 
-**API endpoints**
+```flow
+Stock IN (50) | quantity 0 → 50 (goods arrived from the supplier)
+Stock OUT (46) | quantity 50 → 4 (goods sold / used)
+Stock OUT (10) | rejected: only 4 left in stock
+Low stock | quantity 4 ≤ reorder level 5, so it shows up as LOW
+```
+
+**API endpoints you will have at the end of Part B**
 
 | Method | URL | What it does |
 |---|---|---|
-| POST | `/api/auth/register/` | Create a staff account |
-| POST | `/api/auth/login/` | JWT `access` + `refresh` |
-| POST | `/api/auth/refresh/` | New access token |
-| GET | `/api/auth/me/` | Current user |
-| CRUD | `/api/categories/` | With product count |
-| CRUD | `/api/suppliers/` · `/api/customers/` | Contacts |
-| CRUD | `/api/products/` | Filter by category, price range, `low_stock=true` |
-| GET | `/api/products/low-stock/` | Products at or below the reorder level |
-| GET | `/api/products/{id}/movements/` | Stock history of one product |
-| GET/POST | `/api/stock-movements/` | Audit log, plus manual adjustments |
-| CRUD | `/api/purchases/` | Purchase orders |
-| POST | `/api/purchases/{id}/receive/` | Stock IN |
-| POST | `/api/purchases/{id}/cancel/` | Cancel a pending purchase |
-| GET/POST | `/api/sales/` | Create a sale with many items in **one request** |
-| GET | `/api/reports/summary/` | Stock value, sales today, top sellers, by category |
+| POST | `/api/register/` | Create a new (worker) account |
+| POST | `/api/token/` | Log in and get JWT `access` + `refresh` tokens |
+| POST | `/api/token/refresh/` | Get a new access token |
+| GET / POST | `/api/categories/` | List / create categories |
+| GET / POST | `/api/suppliers/` | List / create suppliers |
+| GET / POST | `/api/products/` | List / create products (`?search=usb`) |
+| GET / POST | `/api/stock/` | List / record stock in or out (`?type=out`) |
+| GET | `/api/low-stock/` | Products at or below their reorder level |
+| GET | `/api/summary/` | Totals: products, stock value, low-stock count |
+| GET / PUT / PATCH / DELETE | `/api/<name>/<id>/` | One record: read, update, delete |
 
-## 2. Project setup
+## 1. Install packages and create the project
+
+Open an empty folder in VS Code and open the terminal (`` Ctrl+` ``). Make a virtual environment and install three packages:
 
 ```bash
-mkdir inventory-management
-cd inventory-management
 python -m venv venv
 venv\Scripts\activate
+pip install django djangorestframework djangorestframework-simplejwt
 ```
+
+**What it does**
+- `python -m venv venv` creates a private Python folder called `venv` just for this project.
+- `venv\Scripts\activate` switches the terminal to use it. You will see `(venv)` at the start of the line.
+- `pip install` downloads the packages into that venv.
+
+| Package | Why we need it |
+|---|---|
+| `django` | The web framework |
+| `djangorestframework` | DRF: serializers, viewsets, routers, the browsable API |
+| `djangorestframework-simplejwt` | JWT login (`access` and `refresh` tokens) |
 
 > [!NOTE]
-> macOS/Linux: `source venv/bin/activate`. If PowerShell blocks the script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+> On macOS or Linux, activate with `source venv/bin/activate`. If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try again.
+
+Now create the project and the app:
 
 ```bash
-pip install "django>=5.2,<6" djangorestframework djangorestframework-simplejwt django-filter
+django-admin startproject inventoryproject
+cd inventoryproject
+python manage.py startapp inventoryapp
+mkdir templates
 ```
 
-```bash
-django-admin startproject ims .
-python manage.py startapp accounts
-python manage.py startapp inventory
-```
+**What it does**
+- `startproject inventoryproject` creates the project folder with `manage.py` and the settings package.
+- `cd inventoryproject` moves into it. **Run every command from here on inside this folder** (the one that has `manage.py`).
+- `startapp inventoryapp` creates our app. All models, views and serializers go in here.
+- `mkdir templates` creates one folder for all HTML files. We tell Django about it in Step 2.
+
+Your folder now looks like this. The files marked *new* are ones you will create yourself later:
 
 ```text
-inventory-management/
+inventoryproject/             ← you are here (has manage.py)
 ├── manage.py
-├── ims/                     ← settings.py, urls.py
-├── accounts/                ← register / login / me (uses Django's built-in User)
-├── inventory/
-│   ├── models.py  admin.py  services.py  serializers.py  filters.py
-│   ├── permissions.py  views.py  urls.py
-│   ├── forms.py  web_views.py  web_urls.py  tests.py
-│   └── management/commands/seed.py
-└── templates/
-    ├── base.html
-    ├── registration/login.html
-    └── inventory/*.html
+├── templates/                ← all HTML files (Part C)
+├── inventoryproject/         ← project settings
+│   ├── settings.py
+│   └── urls.py
+└── inventoryapp/             ← our app
+    ├── models.py
+    ├── admin.py
+    ├── serializers.py        ← new (Part B)
+    ├── permissions.py        ← new (Part B)
+    ├── api_views.py          ← new (Part B)
+    ├── views.py              ← web pages (Part C)
+    └── urls.py               ← new (Part C)
 ```
 
-> [!NOTE] Why no custom user here?
-> Our roles are just "manager or not", and Django's built-in `User.is_staff` flag already covers that. (The hospital project needed a `role` field, so it used a custom user.) Being able to say *why* you chose one or the other is a good interview point.
+## 2. settings.py (only two changes)
 
-## 3. settings.py
+Open `inventoryproject/settings.py`. You change **only two things** here: `INSTALLED_APPS` and the templates folder. Leave everything else (database, time zone, middleware) exactly as Django created it.
 
-Open `ims/settings.py`. Replace `INSTALLED_APPS`:
+**Change 1.** Find `INSTALLED_APPS` and add the two marked lines:
 
-```python title="ims/settings.py — INSTALLED_APPS"
+```python title="inventoryproject/settings.py — INSTALLED_APPS"
 INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    # third party
-    "rest_framework",
-    "django_filters",
-    # our apps
-    "accounts",
-    "inventory",
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',   # <--- ADDED (Django REST Framework)
+    'inventoryapp',     # <--- ADDED (our app)
 ]
 ```
 
-Inside `TEMPLATES`, change the `DIRS` line:
+**What it does**
+- `INSTALLED_APPS` is the list of apps Django loads.
+- `'rest_framework'` turns on DRF. It also gives us the browsable API pages and the `api-auth/` login page.
+- `'inventoryapp'` tells Django our app exists. Without it, `makemigrations` will not see your models.
 
-```python title="ims/settings.py — inside TEMPLATES"
-        "DIRS": [BASE_DIR / "templates"],
+**Change 2.** Find `TEMPLATES` and change `'DIRS': []` to the line below:
+
+```python title="inventoryproject/settings.py — TEMPLATES"
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [BASE_DIR / 'templates'],   # <--- CHANGED (was [])
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
 ```
 
-Change the time zone line:
+**What it does**
+- `DIRS` is the list of extra folders where Django looks for HTML files.
+- `BASE_DIR` is the folder that has `manage.py`, so `BASE_DIR / 'templates'` points to the `templates` folder we just made.
+- Now `render(request, 'dashboard.html')` will find `templates/dashboard.html`.
 
-```python title="ims/settings.py — TIME_ZONE"
-TIME_ZONE = "Asia/Kolkata"
-```
+> [!NOTE] What about the big REST_FRAMEWORK block?
+> You don't need a block of extra settings for pagination, filters, time zone or login URLs. The defaults are fine. There is **one** small extra block you do need, and it comes in **Step 11** when we switch on JWT. That step explains why.
 
-Paste at the **bottom**:
+## 3. models.py
 
-```python title="ims/settings.py — add at the bottom"
-from datetime import timedelta
+Open `inventoryapp/models.py` and replace everything with:
 
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
-    ],
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-        "rest_framework.filters.SearchFilter",
-        "rest_framework.filters.OrderingFilter",
-    ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "PAGE_SIZE": 10,
-}
-
-SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
-    "AUTH_HEADER_TYPES": ("Bearer",),
-}
-
-LOGIN_URL = "login"
-LOGIN_REDIRECT_URL = "dashboard"
-LOGOUT_REDIRECT_URL = "login"
-```
-
-## 4. Models
-
-```python title="inventory/models.py"
-from decimal import Decimal
-
-from django.conf import settings
+```python title="inventoryapp/models.py"
 from django.db import models
-from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+from django.contrib.auth.models import User
 
 
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
 
-    class Meta:
-        ordering = ["name"]
-        verbose_name_plural = "categories"
-
     def __str__(self):
         return self.name
 
 
 class Supplier(models.Model):
-    name = models.CharField(max_length=150)
-    contact_person = models.CharField(max_length=100, blank=True)
+    name = models.CharField(max_length=100)
     phone = models.CharField(max_length=15)
     email = models.EmailField(blank=True)
     address = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["name"]
 
     def __str__(self):
         return self.name
 
 
-class Customer(models.Model):
-    name = models.CharField(max_length=150)
-    phone = models.CharField(max_length=15, unique=True)
-    email = models.EmailField(blank=True)
-    address = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["name"]
-
-    def __str__(self):
-        return f"{self.name} ({self.phone})"
-
-
 class Product(models.Model):
-    name = models.CharField(max_length=150)
-    sku = models.CharField("SKU", max_length=30, unique=True)
-    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="products")
-    supplier = models.ForeignKey(
-        Supplier, on_delete=models.SET_NULL, null=True, blank=True, related_name="products"
-    )
-    description = models.TextField(blank=True)
-    cost_price = models.DecimalField(max_digits=10, decimal_places=2)
-    selling_price = models.DecimalField(max_digits=10, decimal_places=2)
-    quantity = models.PositiveIntegerField(default=0)  # changed ONLY by services.record_movement
-    reorder_level = models.PositiveIntegerField(default=10)
-    is_active = models.BooleanField(default=True)
+    UNIT_CHOICES = [
+        ('pcs', 'Pieces'),
+        ('kg', 'Kilogram'),
+        ('ltr', 'Litre'),
+        ('box', 'Box'),
+    ]
+
+    name = models.CharField(max_length=100)
+    sku = models.CharField(max_length=50, unique=True)   # product code, e.g. USB-01
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
+    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
+    unit = models.CharField(max_length=10, choices=UNIT_CHOICES, default='pcs')
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.IntegerField(default=0)        # changes ONLY through stock transactions
+    reorder_level = models.IntegerField(default=10)  # at or below this = low stock
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        ordering = ["name"]
-
-    def __str__(self):
-        return f"{self.name} ({self.sku})"
-
-    @property
     def is_low_stock(self):
         return self.quantity <= self.reorder_level
 
-    @property
     def stock_value(self):
-        return self.quantity * self.cost_price
+        return self.quantity * self.price
+
+    def __str__(self):
+        return self.name + ' (' + self.sku + ')'
 
 
-class StockMovement(models.Model):
-    """Audit log: one row for every change in stock."""
+class StockTransaction(models.Model):
+    TYPE_CHOICES = [
+        ('in', 'Stock In'),
+        ('out', 'Stock Out'),
+    ]
 
-    class Type(models.TextChoices):
-        IN = "IN", "Stock in"
-        OUT = "OUT", "Stock out"
-
-    class Reason(models.TextChoices):
-        PURCHASE = "PURCHASE", "Purchase"
-        SALE = "SALE", "Sale"
-        ADJUSTMENT = "ADJUSTMENT", "Adjustment"
-
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="movements")
-    movement_type = models.CharField(max_length=3, choices=Type.choices)
-    quantity = models.PositiveIntegerField()
-    reason = models.CharField(max_length=10, choices=Reason.choices, default=Reason.ADJUSTMENT)
-    note = models.CharField(max_length=255, blank=True)
-    balance_after = models.PositiveIntegerField()
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
-    )
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    transaction_type = models.CharField(max_length=10, choices=TYPE_CHOICES)
+    quantity = models.IntegerField()
+    note = models.CharField(max_length=200, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        ordering = ["-created_at", "-id"]
-
     def __str__(self):
-        sign = "+" if self.movement_type == self.Type.IN else "-"
-        return f"{self.product.sku} {sign}{self.quantity} → {self.balance_after}"
-
-
-class Purchase(models.Model):
-    """Buying stock from a supplier. Stock is added only when it is RECEIVED."""
-
-    class Status(models.TextChoices):
-        PENDING = "PENDING", "Pending"
-        RECEIVED = "RECEIVED", "Received"
-        CANCELLED = "CANCELLED", "Cancelled"
-
-    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="purchases")
-    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="purchases")
-    quantity = models.PositiveIntegerField()
-    unit_cost = models.DecimalField(max_digits=10, decimal_places=2)
-    total = models.DecimalField(max_digits=12, decimal_places=2, editable=False, default=0)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
-    )
-    ordered_at = models.DateTimeField(auto_now_add=True)
-    received_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-ordered_at"]
-
-    def __str__(self):
-        return f"PO-{self.pk}: {self.quantity} x {self.product.name}"
-
-    def save(self, *args, **kwargs):
-        self.total = self.quantity * self.unit_cost  # always computed, never typed in
-        super().save(*args, **kwargs)
-
-
-class Sale(models.Model):
-    """One bill. Lines live in SaleItem. Totals are calculated, not typed."""
-
-    customer = models.ForeignKey(
-        Customer, on_delete=models.PROTECT, null=True, blank=True, related_name="sales"
-    )
-    tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("18.00"))
-    sub_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    grand_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"INV-{self.pk:05d}"
-
-    def recalculate(self):
-        line_total = ExpressionWrapper(
-            F("unit_price") * F("quantity"), output_field=DecimalField(max_digits=12, decimal_places=2)
-        )
-        sub_total = self.items.aggregate(total=Sum(line_total))["total"] or Decimal("0")
-        self.sub_total = sub_total
-        self.tax_amount = (sub_total * self.tax_percentage / 100).quantize(Decimal("0.01"))
-        self.grand_total = self.sub_total + self.tax_amount
-        self.save(update_fields=["sub_total", "tax_amount", "grand_total"])
-
-
-class SaleItem(models.Model):
-    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="items")
-    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="sale_items")
-    quantity = models.PositiveIntegerField()
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2)  # price at time of sale
-
-    def __str__(self):
-        return f"{self.quantity} x {self.product.name}"
-
-    @property
-    def line_total(self):
-        return self.quantity * self.unit_price
+        return self.transaction_type.upper() + ' ' + str(self.quantity) + ' x ' + self.product.name
 ```
 
-> [!REMEMBER] Design decisions to explain
-> - **Money is `DecimalField`, never `FloatField`.** `0.1 + 0.2 != 0.3` with floats.
-> - `SaleItem.unit_price` **copies** the price at the time of sale, so later price changes don't rewrite old invoices.
-> - `on_delete=PROTECT` on product/category means you can't delete a product that appears in old sales.
-> - `Purchase.save()` computes `total`. `Sale.recalculate()` uses **`aggregate(Sum(...))`**, which runs the maths in the database.
-> - `Sale` + `SaleItem` is the classic **header / line-item** (master–detail) pattern.
+**What it does.** Each class becomes one table in the database. Each line inside a class becomes one column.
+
+| Model | What it stores | Links |
+|---|---|---|
+| `Category` | Product groups | Has many products |
+| `Supplier` | Who we buy from | Has many products |
+| `Product` | One item in the store | `category` → one Category. `supplier` → one Supplier (optional) |
+| `StockTransaction` | One stock movement (in or out) | `product` → one Product. `created_by` → the user who recorded it |
+
+**Field types used**
+
+| Field | Meaning |
+|---|---|
+| `CharField(max_length=100)` | Short text. `max_length` is required |
+| `TextField()` | Long text with no limit |
+| `IntegerField()` | Whole number (quantity) |
+| `DecimalField(max_digits=10, decimal_places=2)` | Exact money values like `199.50`. Use it for prices, never `FloatField` |
+| `EmailField()` | Text that must look like an email |
+| `DateTimeField(auto_now_add=True)` | Filled in automatically when the row is created |
+| `ForeignKey(Category, ...)` | **Many-to-one.** Many products belong to one category |
+
+**Options and methods used**
+
+- `choices=UNIT_CHOICES` gives a fixed list of allowed values. Each pair is `('value saved in DB', 'Label shown to humans')`.
+- `unique=True` on `sku` means two products can't have the same code.
+- `default=0` means a new product starts with 0 in stock.
+- `blank=True` means the field may be left empty in forms and in the API. `null=True` lets the database store "nothing" (NULL). A supplier is optional, so it needs both.
+- `on_delete=models.CASCADE` means: delete a category, and its products are deleted too.
+- `on_delete=models.SET_NULL` means: delete a supplier, and the products stay but `supplier` becomes empty.
+- `is_low_stock()` and `stock_value()` are **normal Python methods** on the model. Use them anywhere: `product.is_low_stock()` in views, `{% if product.is_low_stock %}` in templates.
+- `__str__` is the text Django shows for a row (in admin dropdowns, for example `USB Cable (USB-01)`).
+
+## 4. Make and run migrations
 
 ```bash
-python manage.py makemigrations inventory
+python manage.py makemigrations
 python manage.py migrate
 ```
 
-## 5. Admin
+**What it does**
+- `makemigrations` reads `models.py` and writes a migration file (`inventoryapp/migrations/0001_initial.py`). It's a plan for creating the tables.
+- `migrate` runs that plan on the database (`db.sqlite3`). It also creates Django's built-in tables (users, sessions, admin).
+- **Every time you change `models.py`, run both commands again.**
 
-```python title="inventory/admin.py"
+## 5. admin.py
+
+Open `inventoryapp/admin.py` and replace everything with:
+
+```python title="inventoryapp/admin.py"
 from django.contrib import admin
+from .models import Category, Supplier, Product, StockTransaction
 
-from .models import Category, Customer, Product, Purchase, Sale, SaleItem, StockMovement, Supplier
-
-
-@admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
-    list_display = ("name", "description")
-    search_fields = ("name",)
-
-
-@admin.register(Supplier)
-class SupplierAdmin(admin.ModelAdmin):
-    list_display = ("name", "contact_person", "phone", "email")
-    search_fields = ("name", "phone", "email")
-
-
-@admin.register(Customer)
-class CustomerAdmin(admin.ModelAdmin):
-    list_display = ("name", "phone", "email", "created_at")
-    search_fields = ("name", "phone")
-
-
-@admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
-    list_display = ("name", "sku", "category", "selling_price", "quantity", "reorder_level", "is_low_stock", "is_active")
-    list_filter = ("category", "supplier", "is_active")
-    search_fields = ("name", "sku")
-    readonly_fields = ("quantity",)  # stock changes only through movements
-    list_select_related = ("category",)
-
-    @admin.display(boolean=True, description="Low stock")
-    def is_low_stock(self, obj):
-        return obj.is_low_stock
-
-
-@admin.register(StockMovement)
-class StockMovementAdmin(admin.ModelAdmin):
-    list_display = ("product", "movement_type", "quantity", "balance_after", "reason", "created_by", "created_at")
-    list_filter = ("movement_type", "reason")
-    search_fields = ("product__name", "product__sku", "note")
-
-    def has_change_permission(self, request, obj=None):
-        return False  # audit log is read-only
-
-
-@admin.register(Purchase)
-class PurchaseAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "supplier", "quantity", "unit_cost", "total", "status", "ordered_at")
-    list_filter = ("status", "supplier")
-
-
-class SaleItemInline(admin.TabularInline):
-    model = SaleItem
-    extra = 0
-    readonly_fields = ("product", "quantity", "unit_price")
-
-
-@admin.register(Sale)
-class SaleAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "customer", "sub_total", "tax_amount", "grand_total", "created_at")
-    date_hierarchy = "created_at"
-    inlines = [SaleItemInline]
+admin.site.register(Category)
+admin.site.register(Supplier)
+admin.site.register(Product)
+admin.site.register(StockTransaction)
 ```
+
+**What it does**
+- `admin.site.register(Model)` adds that table to the admin panel at `/admin/`, with add, edit, delete and list pages for free.
+
+> [!WARNING]
+> Adding a stock transaction **inside the admin panel** does not change the product's quantity, because that logic lives in our views (Steps 9 and 13). Use the admin for categories, suppliers and products. Record stock through the API or the Stock page.
+
+## 6. Create the manager and some test data
+
+Create the superuser. This account is the **Manager** (a superuser is always staff):
 
 ```bash
 python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Visit <http://127.0.0.1:8000/admin/>. **Checkpoint 1.**
+**What it does**
+- `createsuperuser` asks for a username, email (you can leave it empty) and password.
+- `runserver` starts the site at `http://127.0.0.1:8000/`. Keep this terminal running and open a second terminal for other commands.
 
-## 6. Stock service (the core business logic)
+Open `http://127.0.0.1:8000/admin/`, log in, and add this data **in this order**:
 
-Keep business rules **out of views** and put them in a plain Python module. The API, the HTML views, the admin and the seed command all call the same functions.
+1. **Categories** → add `Electronics` and `Stationery`.
+2. **Suppliers** → add `ABC Traders`, phone `9876543210`.
+3. **Products** → add `USB Cable`: SKU `USB-01`, category Electronics, supplier ABC Traders, price `199`, reorder level `5`. Leave quantity at `0`.
+4. **Products** → add `Notebook`: SKU `NB-01`, category Stationery, price `45`, reorder level `20`.
 
-```python title="inventory/services.py"
-from decimal import Decimal
+You'll make the **worker** account in Step 12 with the register API (or in Part C with the signup page).
 
-from django.core.exceptions import ValidationError
-from django.db import transaction
-from django.db.models import F
-from django.utils import timezone
+> [!TIP] Checkpoint
+> If you can see all four tables in `/admin/` and add rows, **Part A is done**. You already have something to show.
 
-from .models import Product, Purchase, Sale, SaleItem, StockMovement
+## Part B — REST API
 
+The API sends and receives **JSON** instead of HTML. Three pieces work together:
 
-def record_movement(*, product, movement_type, quantity, reason=StockMovement.Reason.ADJUSTMENT, user=None, note=""):
-    """The ONLY place Product.quantity changes.
-
-    - select_for_update() locks the row, so two sales at the same moment can't oversell.
-    - F("quantity") + delta does the maths in SQL (no race between read and write).
-    - Writes an audit row with the balance after the change.
-    """
-    if quantity is None or quantity <= 0:
-        raise ValidationError("Quantity must be greater than zero.")
-
-    with transaction.atomic():
-        locked = Product.objects.select_for_update().get(pk=product.pk)
-        if movement_type == StockMovement.Type.OUT and locked.quantity < quantity:
-            raise ValidationError(
-                f"Not enough stock for {locked.name}: {locked.quantity} available, {quantity} requested."
-            )
-        delta = quantity if movement_type == StockMovement.Type.IN else -quantity
-        Product.objects.filter(pk=locked.pk).update(quantity=F("quantity") + delta)
-        movement = StockMovement.objects.create(
-            product=locked,
-            movement_type=movement_type,
-            quantity=quantity,
-            reason=reason,
-            note=note,
-            balance_after=locked.quantity + delta,
-            created_by=user,
-        )
-    product.quantity = movement.balance_after  # keep the caller's object in sync
-    return movement
-
-
-def receive_purchase(purchase, user=None):
-    """PENDING -> RECEIVED: stock goes IN and the product's cost price is updated."""
-    if purchase.status != Purchase.Status.PENDING:
-        raise ValidationError(f"Purchase is already {purchase.get_status_display().lower()}.")
-    with transaction.atomic():
-        record_movement(
-            product=purchase.product,
-            movement_type=StockMovement.Type.IN,
-            quantity=purchase.quantity,
-            reason=StockMovement.Reason.PURCHASE,
-            user=user,
-            note=f"PO-{purchase.pk} from {purchase.supplier.name}",
-        )
-        Product.objects.filter(pk=purchase.product_id).update(cost_price=purchase.unit_cost)
-        purchase.status = Purchase.Status.RECEIVED
-        purchase.received_at = timezone.now()
-        purchase.save(update_fields=["status", "received_at"])
-    return purchase
-
-
-def create_sale(*, items, user=None, customer=None, tax_percentage=Decimal("18.00")):
-    """items = [{"product": <Product>, "quantity": 3}, ...]
-
-    All-or-nothing: if ANY line doesn't have enough stock, the whole sale is
-    rolled back. No half-saved bill, no stock taken.
-    """
-    if not items:
-        raise ValidationError("A sale needs at least one item.")
-    with transaction.atomic():
-        sale = Sale.objects.create(customer=customer, tax_percentage=tax_percentage, created_by=user)
-        for line in items:
-            product = line["product"]
-            if not product.is_active:
-                raise ValidationError(f"{product.name} is not for sale.")
-            record_movement(
-                product=product,
-                movement_type=StockMovement.Type.OUT,
-                quantity=line["quantity"],
-                reason=StockMovement.Reason.SALE,
-                user=user,
-                note=f"INV-{sale.pk:05d}",
-            )
-            SaleItem.objects.create(
-                sale=sale, product=product, quantity=line["quantity"], unit_price=product.selling_price
-            )
-        sale.recalculate()
-    return sale
+```flow
+Serializer | converts a model object ↔ JSON and validates incoming data (like a ModelForm)
+ViewSet | one class that does list, create, retrieve, update and delete
+Router | builds all the URLs for a ViewSet automatically
 ```
 
-> [!TIP] How to say it in the interview
-> "`transaction.atomic()` makes the sale all-or-nothing. `select_for_update()` locks the product row so two cashiers can't sell the last unit twice. `F()` expressions do the arithmetic in the database. Every change leaves an audit row."
+## 7. serializers.py
 
-## 7. Permissions and filters
+Create a **new file** `inventoryapp/serializers.py`:
 
-```python title="inventory/permissions.py"
-from rest_framework.permissions import SAFE_METHODS, BasePermission
-
-
-class IsStaffOrReadOnly(BasePermission):
-    """Any logged-in user can read. Only managers (is_staff) can write."""
-
-    message = "Only managers can change this."
-
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user.is_staff
-```
-
-`django-filter` lets you declare filters instead of hand-parsing `request.query_params`:
-
-```python title="inventory/filters.py"
-import django_filters
-from django.db.models import F
-
-from .models import Product
-
-
-class ProductFilter(django_filters.FilterSet):
-    # /api/products/?min_price=100&max_price=500&low_stock=true&category=2
-    min_price = django_filters.NumberFilter(field_name="selling_price", lookup_expr="gte")
-    max_price = django_filters.NumberFilter(field_name="selling_price", lookup_expr="lte")
-    low_stock = django_filters.BooleanFilter(method="filter_low_stock")
-
-    class Meta:
-        model = Product
-        fields = ["category", "supplier", "is_active"]
-
-    def filter_low_stock(self, queryset, name, value):
-        if value:
-            return queryset.filter(quantity__lte=F("reorder_level"))
-        return queryset.filter(quantity__gt=F("reorder_level"))
-```
-
-## 8. Serializers
-
-> [!NOTE] Serializer in one line
-> **Model ↔ JSON + validation.** `serializer.is_valid()` runs the field checks, then `validate_<field>()`, then `validate()`. `serializer.save()` calls `create()` or `update()`. Override `create()` when saving means more than one `INSERT`, as with our sale.
-
-### Accounts
-
-```python title="accounts/serializers.py"
+```python title="inventoryapp/serializers.py"
 from django.contrib.auth.models import User
-from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "is_staff"]
-        read_only_fields = ["id", "username", "is_staff"]
+from .models import Category, Supplier, Product, StockTransaction
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, validators=[validate_password])
-    password2 = serializers.CharField(write_only=True, label="Confirm password")
+    password = serializers.CharField(write_only=True, min_length=6)
 
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "password", "password2"]
-
-    def validate_email(self, value):
-        if value and User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError("This email is already registered.")
-        return value
-
-    def validate(self, attrs):
-        if attrs["password"] != attrs["password2"]:
-            raise serializers.ValidationError({"password2": "Passwords do not match."})
-        return attrs
+        fields = ['id', 'username', 'email', 'password']
 
     def create(self, validated_data):
-        validated_data.pop("password2")
-        # create_user() hashes the password. New users are normal staff (is_staff=False).
-        return User.objects.create_user(**validated_data)
-```
-
-### Inventory
-
-```python title="inventory/serializers.py"
-from django.core.exceptions import ValidationError as DjangoValidationError
-from rest_framework import serializers
-
-from . import services
-from .models import Category, Customer, Product, Purchase, Sale, SaleItem, StockMovement, Supplier
+        # create_user() saves the password HASHED (never as plain text)
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data.get('email', ''),
+            password=validated_data['password'],
+        )
+        return user
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    product_count = serializers.IntegerField(read_only=True)  # from .annotate() in the view
-
     class Meta:
         model = Category
-        fields = ["id", "name", "description", "product_count"]
+        fields = ['id', 'name', 'description']
 
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
-        fields = ["id", "name", "contact_person", "phone", "email", "address", "created_at"]
+        fields = ['id', 'name', 'phone', 'email', 'address']
 
-
-class CustomerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Customer
-        fields = ["id", "name", "phone", "email", "address", "created_at"]
+    def validate_phone(self, value):
+        if not value.isdigit() or len(value) != 10:
+            raise serializers.ValidationError('Phone number must be exactly 10 digits.')
+        return value
 
 
 class ProductSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(source="category.name", read_only=True)
-    supplier_name = serializers.CharField(source="supplier.name", read_only=True, default=None)
+    # Extra read-only fields, only shown in the output
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True, allow_null=True)
     is_low_stock = serializers.BooleanField(read_only=True)
-    stock_value = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    stock_value = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = Product
-        fields = [
-            "id", "name", "sku", "category", "category_name", "supplier", "supplier_name",
-            "description", "cost_price", "selling_price", "quantity", "reorder_level",
-            "is_low_stock", "stock_value", "is_active", "created_at", "updated_at",
-        ]
-        # quantity is read-only: stock changes only via purchases / sales / movements
-        read_only_fields = ["quantity", "created_at", "updated_at"]
+        fields = ['id', 'name', 'sku', 'category', 'category_name', 'supplier', 'supplier_name',
+                  'unit', 'price', 'quantity', 'reorder_level', 'is_low_stock', 'stock_value', 'created_at']
+        read_only_fields = ['quantity']   # quantity only changes through stock transactions
 
     def validate_sku(self, value):
-        return value.strip().upper()
-
-    def validate(self, attrs):
-        cost = attrs.get("cost_price", getattr(self.instance, "cost_price", None))
-        price = attrs.get("selling_price", getattr(self.instance, "selling_price", None))
-        if cost is not None and price is not None and price < cost:
-            raise serializers.ValidationError({"selling_price": "Selling price cannot be below cost price."})
-        return attrs
-
-
-class StockMovementSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source="product.name", read_only=True)
-    created_by = serializers.StringRelatedField()
-
-    class Meta:
-        model = StockMovement
-        fields = [
-            "id", "product", "product_name", "movement_type", "quantity", "reason",
-            "note", "balance_after", "created_by", "created_at",
-        ]
-        read_only_fields = ["reason", "balance_after", "created_at"]
-
-    def create(self, validated_data):
-        """POST = manual adjustment (damaged goods, stock count correction...)."""
-        try:
-            return services.record_movement(
-                user=self.context["request"].user,
-                reason=StockMovement.Reason.ADJUSTMENT,
-                **validated_data,
-            )
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({"quantity": exc.messages})
-
-
-class PurchaseSerializer(serializers.ModelSerializer):
-    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
-    product_name = serializers.CharField(source="product.name", read_only=True)
-
-    class Meta:
-        model = Purchase
-        fields = [
-            "id", "supplier", "supplier_name", "product", "product_name", "quantity",
-            "unit_cost", "total", "status", "ordered_at", "received_at",
-        ]
-        read_only_fields = ["total", "status", "ordered_at", "received_at"]
-
-    def validate_quantity(self, value):
-        if value < 1:
-            raise serializers.ValidationError("Quantity must be at least 1.")
+        value = value.upper()   # 'usb-01' is saved as 'USB-01'
+        products = Product.objects.filter(sku=value)
+        if self.instance:
+            # When updating, don't compare the product with itself
+            products = products.exclude(id=self.instance.id)
+        if products.exists():
+            raise serializers.ValidationError('A product with SKU ' + value + ' already exists.')
         return value
 
-    def validate(self, attrs):
-        if self.instance and self.instance.status != Purchase.Status.PENDING:
-            raise serializers.ValidationError("Only pending purchases can be edited.")
-        return attrs
+    def validate_price(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('Price must be greater than 0.')
+        return value
 
-
-class SaleItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source="product.name", read_only=True)
-    line_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-
-    class Meta:
-        model = SaleItem
-        fields = ["id", "product", "product_name", "quantity", "unit_price", "line_total"]
-        read_only_fields = ["unit_price"]  # taken from the product, client can't set it
-
-    def validate_quantity(self, value):
-        if value < 1:
-            raise serializers.ValidationError("Quantity must be at least 1.")
+    def validate_reorder_level(self, value):
+        if value < 0:
+            raise serializers.ValidationError('Reorder level cannot be negative.')
         return value
 
 
-class SaleSerializer(serializers.ModelSerializer):
-    """Nested WRITE: one POST creates the Sale and all its SaleItems."""
-
-    items = SaleItemSerializer(many=True)
-    customer_name = serializers.CharField(source="customer.name", read_only=True, default="Walk-in")
-    created_by = serializers.StringRelatedField()
+class StockTransactionSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
 
     class Meta:
-        model = Sale
-        fields = [
-            "id", "customer", "customer_name", "items", "tax_percentage",
-            "sub_total", "tax_amount", "grand_total", "created_by", "created_at",
-        ]
-        read_only_fields = ["sub_total", "tax_amount", "grand_total", "created_at"]
+        model = StockTransaction
+        fields = ['id', 'product', 'product_name', 'transaction_type', 'quantity', 'note',
+                  'created_by', 'created_by_username', 'created_at']
+        read_only_fields = ['created_by']   # set automatically to the logged-in user
 
-    def validate_items(self, items):
-        if not items:
-            raise serializers.ValidationError("Add at least one item.")
-        ids = [line["product"].id for line in items]
-        if len(ids) != len(set(ids)):
-            raise serializers.ValidationError("Each product can appear only once per sale.")
-        return items
+    def validate_quantity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('Quantity must be greater than 0.')
+        return value
 
-    def create(self, validated_data):
-        try:
-            return services.create_sale(
-                items=validated_data["items"],
-                customer=validated_data.get("customer"),
-                tax_percentage=validated_data.get("tax_percentage", Sale._meta.get_field("tax_percentage").default),
-                user=self.context["request"].user,
+    def validate(self, data):
+        # Cross-field check: cannot take out more than what is in stock
+        product = data['product']
+        if data['transaction_type'] == 'out' and data['quantity'] > product.quantity:
+            raise serializers.ValidationError(
+                'Not enough stock. Only ' + str(product.quantity) + ' left for ' + product.name + '.'
             )
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({"items": exc.messages})
+        return data
 ```
 
-> [!TIP] Serializer features shown here
-> - `source="category.name"` flattens a relationship, and `default=None` handles a null supplier.
-> - `read_only_fields = ["quantity"]` means the API **can't** set stock directly.
-> - A nested `items = SaleItemSerializer(many=True)` plus a custom `create()` gives you a **writable nested serializer**. DRF won't save nested data on its own; you must override `create()`.
-> - Django's `ValidationError` from the service is converted to DRF's `serializers.ValidationError`, so the client gets a clean 400 instead of a 500.
+**What it does**
 
-## 9. Views and URLs
+- **`ModelSerializer`** builds the fields from the model for you, just like `ModelForm` does for forms. `Meta.model` says which model. `Meta.fields` lists which columns appear in the JSON.
+- **Output (model → JSON).** A Product object becomes:
+  ```json
+  {"id": 1, "name": "USB Cable", "sku": "USB-01", "category": 1, "category_name": "Electronics", "supplier": 1, "supplier_name": "ABC Traders", "unit": "pcs", "price": "199.00", "quantity": 4, "reorder_level": 5, "is_low_stock": true, "stock_value": "796.00", "created_at": "..."}
+  ```
+  Money (`DecimalField`) comes out as a **string** (`"199.00"`) so no precision is lost.
+- **Input (JSON → model).** On POST, the serializer checks every field, runs your `validate_...` methods, then saves.
+- **Foreign keys** like `category` and `product` are sent as **ids** (`"category": 1`).
 
-### Accounts
+**The extra fields**
 
-```python title="accounts/views.py"
-from django.contrib.auth.models import User
-from rest_framework import generics
-from rest_framework.permissions import AllowAny
+| Field | What it does |
+|---|---|
+| `category_name = CharField(source='category.name', read_only=True)` | Follows the foreign key and shows the name next to the id |
+| `supplier_name = CharField(..., allow_null=True)` | Same, but the supplier is optional. `allow_null=True` shows `null` when a product has no supplier |
+| `is_low_stock = BooleanField(read_only=True)` | No `source` is given, so DRF uses the field name and **calls the model method** `is_low_stock()` |
+| `stock_value = DecimalField(..., read_only=True)` | Same idea: calls `stock_value()` (quantity × price) |
+| `read_only_fields = ['quantity']` | Clients can **see** the quantity but can't **send** it. That keeps the inventory honest |
+| `password = CharField(write_only=True)` | The opposite: clients send it, but it's **never** shown in a response |
 
-from .serializers import RegisterSerializer, UserSerializer
+**RegisterSerializer**
+- It uses Django's own `User` model, so no custom user is needed.
+- We override `create()` because the default would save the password as plain text. `User.objects.create_user(...)` **hashes** it, which is the only way login will work later.
+- `ModelSerializer` adds a "username already exists" check automatically, because `username` is unique in `User`.
+
+**Validation methods**
+
+| Method | Checks |
+|---|---|
+| `validate_sku` | **Changes** the value to upper case (whatever you return is what gets saved), then checks no other product has that SKU. `self.instance` is the product being updated (`None` on create), so we skip it |
+| `validate_price` / `validate_reorder_level` / `validate_quantity` / `validate_phone` | One field each. `raise serializers.ValidationError(...)` gives a **400** response |
+| `validate(self, data)` | Several fields together: type is `out` **and** quantity is more than what's in stock |
+
+## 8. permissions.py
+
+Create a **new file** `inventoryapp/permissions.py`:
+
+```python title="inventoryapp/permissions.py"
+from rest_framework.permissions import BasePermission
 
 
-class RegisterView(generics.CreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = RegisterSerializer
-    permission_classes = [AllowAny]  # anyone can sign up as normal staff
-
-
-class MeView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserSerializer
-
-    def get_object(self):
-        return self.request.user
+class IsStaffOrReadOnly(BasePermission):
+    # Any logged-in user can READ. Only staff (managers) can create, edit or delete.
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True
+        return request.user.is_staff
 ```
 
-```python title="accounts/urls.py"
-from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+**What it does**
+- A permission class extends `BasePermission` and overrides `has_permission(self, request, view)`. DRF calls it **before** every request. Return `True` to allow it or `False` to block it.
+- Not logged in → `False`, and the API answers **401 Unauthorized**.
+- `GET`, `HEAD` and `OPTIONS` only read data, so every logged-in user may use them.
+- Anything else (POST, PUT, PATCH, DELETE) is only allowed if `request.user.is_staff` is `True`. Otherwise the API answers **403 Forbidden**.
+- Make someone a manager in `/admin/` → Users → click the user → tick **Staff status** → Save.
 
-from . import views
+## 9. api_views.py (ViewSets and function views)
 
-urlpatterns = [
-    path("register/", views.RegisterView.as_view(), name="register"),
-    path("login/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-    path("me/", views.MeView.as_view(), name="me"),
-]
-```
+We keep API views in their own file so they don't mix with the web views. Create a **new file** `inventoryapp/api_views.py`:
 
-### Inventory API
-
-```python title="inventory/views.py"
-from datetime import timedelta
-from decimal import Decimal
-
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
-from django.utils import timezone
-from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import action
+```python title="inventoryapp/api_views.py"
+from rest_framework import viewsets
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from . import services
-from .filters import ProductFilter
-from .models import Category, Customer, Product, Purchase, Sale, SaleItem, StockMovement, Supplier
+from .models import Category, Supplier, Product, StockTransaction
+from .serializers import (RegisterSerializer, CategorySerializer, SupplierSerializer,
+                          ProductSerializer, StockTransactionSerializer)
 from .permissions import IsStaffOrReadOnly
-from .serializers import (
-    CategorySerializer,
-    CustomerSerializer,
-    ProductSerializer,
-    PurchaseSerializer,
-    SaleSerializer,
-    StockMovementSerializer,
-    SupplierSerializer,
-)
 
-MONEY = DecimalField(max_digits=14, decimal_places=2)
 
+# ---------------- ViewSets (full CRUD) ----------------
 
 class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.annotate(product_count=Count("products")).order_by("name")
+    queryset = Category.objects.all().order_by('name')
     serializer_class = CategorySerializer
     permission_classes = [IsStaffOrReadOnly]
-    search_fields = ["name"]
-
-    def destroy(self, request, *args, **kwargs):
-        if self.get_object().products.exists():
-            return Response({"detail": "Category still has products."}, status=status.HTTP_400_BAD_REQUEST)
-        return super().destroy(request, *args, **kwargs)
 
 
 class SupplierViewSet(viewsets.ModelViewSet):
-    queryset = Supplier.objects.all()
+    queryset = Supplier.objects.all().order_by('name')
     serializer_class = SupplierSerializer
     permission_classes = [IsStaffOrReadOnly]
-    search_fields = ["name", "contact_person", "phone", "email"]
-
-
-class CustomerViewSet(viewsets.ModelViewSet):
-    queryset = Customer.objects.all()
-    serializer_class = CustomerSerializer  # any logged-in staff can add customers at the counter
-    search_fields = ["name", "phone", "email"]
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.select_related("category", "supplier")
     serializer_class = ProductSerializer
     permission_classes = [IsStaffOrReadOnly]
-    filterset_class = ProductFilter
-    search_fields = ["name", "sku", "description"]
-    ordering_fields = ["name", "selling_price", "quantity", "created_at"]
 
-    def perform_destroy(self, instance):
-        # Soft delete: old sales still point to this product, so just hide it.
-        instance.is_active = False
-        instance.save(update_fields=["is_active"])
+    def get_queryset(self):
+        products = Product.objects.all().order_by('name')
 
-    @action(detail=False, methods=["get"], url_path="low-stock")
-    def low_stock(self, request):
-        qs = self.get_queryset().filter(is_active=True, quantity__lte=F("reorder_level")).order_by("quantity")
-        return Response(self.get_serializer(qs, many=True).data)
+        # /api/products/?search=usb
+        search = self.request.query_params.get('search')
+        if search:
+            products = products.filter(name__icontains=search)
 
-    @action(detail=True, methods=["get"])
-    def movements(self, request, pk=None):
-        product = self.get_object()
-        page = self.paginate_queryset(product.movements.select_related("created_by"))
-        data = StockMovementSerializer(page, many=True).data
-        return self.get_paginated_response(data)
+        # /api/products/?category=electronics
+        category = self.request.query_params.get('category')
+        if category:
+            products = products.filter(category__name__icontains=category)
+
+        return products
 
 
-class StockMovementViewSet(
-    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet
-):
-    """An audit log: list, view and add. No update or delete endpoints exist."""
+class StockTransactionViewSet(viewsets.ModelViewSet):
+    serializer_class = StockTransactionSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'post']   # no edit / delete: stock history must not change
 
-    queryset = StockMovement.objects.select_related("product", "created_by")
-    serializer_class = StockMovementSerializer
-    filterset_fields = ["product", "movement_type", "reason"]
-    search_fields = ["product__name", "product__sku", "note"]
+    def get_queryset(self):
+        transactions = StockTransaction.objects.all().order_by('-created_at')
 
+        # /api/stock/?type=in   or   /api/stock/?type=out
+        transaction_type = self.request.query_params.get('type')
+        if transaction_type:
+            transactions = transactions.filter(transaction_type=transaction_type)
 
-class PurchaseViewSet(viewsets.ModelViewSet):
-    queryset = Purchase.objects.select_related("supplier", "product")
-    serializer_class = PurchaseSerializer
-    permission_classes = [IsStaffOrReadOnly]
-    filterset_fields = ["status", "supplier", "product"]
-    ordering_fields = ["ordered_at", "total"]
+        return transactions
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        # 1. save the transaction with the logged-in user
+        stock = serializer.save(created_by=self.request.user)
 
-    def destroy(self, request, *args, **kwargs):
-        if self.get_object().status == Purchase.Status.RECEIVED:
-            return Response({"detail": "Received purchases cannot be deleted."}, status=status.HTTP_400_BAD_REQUEST)
-        return super().destroy(request, *args, **kwargs)
-
-    @action(detail=True, methods=["post"])
-    def receive(self, request, pk=None):
-        purchase = self.get_object()
-        try:
-            services.receive_purchase(purchase, user=request.user)
-        except DjangoValidationError as exc:
-            return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(self.get_serializer(purchase).data)
-
-    @action(detail=True, methods=["post"])
-    def cancel(self, request, pk=None):
-        purchase = self.get_object()
-        if purchase.status != Purchase.Status.PENDING:
-            return Response({"detail": "Only pending purchases can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
-        purchase.status = Purchase.Status.CANCELLED
-        purchase.save(update_fields=["status"])
-        return Response(self.get_serializer(purchase).data)
+        # 2. update the product quantity
+        product = stock.product
+        if stock.transaction_type == 'in':
+            product.quantity = product.quantity + stock.quantity
+        else:
+            product.quantity = product.quantity - stock.quantity
+        product.save()
 
 
-class SaleViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
-    """Sales are never edited or deleted (that's what returns/credit notes are for)."""
+# ---------------- Function-based API views ----------------
 
-    queryset = Sale.objects.select_related("customer", "created_by").prefetch_related("items__product")
-    serializer_class = SaleSerializer
-    filterset_fields = ["customer"]
-    ordering_fields = ["created_at", "grand_total"]
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register(request):
+    serializer = RegisterSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
 
 
-class ReportSummaryView(APIView):
-    """GET /api/reports/summary/: aggregate() and annotate() in action."""
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def low_stock_products(request):
+    low_stock = []
+    for product in Product.objects.all().order_by('quantity'):
+        if product.is_low_stock():
+            low_stock.append(product)
 
-    def get(self, request):
-        today = timezone.localdate()
-        month_ago = timezone.now() - timedelta(days=30)
-        active = Product.objects.filter(is_active=True)
+    serializer = ProductSerializer(low_stock, many=True)
+    return Response(serializer.data)
 
-        stock = active.aggregate(
-            products=Count("id"),
-            units=Sum("quantity"),
-            value_at_cost=Sum(ExpressionWrapper(F("quantity") * F("cost_price"), output_field=MONEY)),
-            value_at_price=Sum(ExpressionWrapper(F("quantity") * F("selling_price"), output_field=MONEY)),
-            low_stock=Count("id", filter=Q(quantity__lte=F("reorder_level"))),
-        )
-        sales_today = Sale.objects.filter(created_at__date=today).aggregate(
-            count=Count("id"), revenue=Sum("grand_total")
-        )
-        top_products = (
-            SaleItem.objects.filter(sale__created_at__gte=month_ago)
-            .values("product__name")
-            .annotate(units=Sum("quantity"), revenue=Sum(ExpressionWrapper(F("quantity") * F("unit_price"), output_field=MONEY)))
-            .order_by("-units")[:5]
-        )
-        by_category = (
-            Category.objects.annotate(
-                product_count=Count("products", filter=Q(products__is_active=True)),
-                units=Sum("products__quantity", filter=Q(products__is_active=True)),
-            )
-            .values("name", "product_count", "units")
-            .order_by("name")
-        )
-        return Response(
-            {
-                "stock": {k: v or 0 for k, v in stock.items()},
-                "sales_today": {"count": sales_today["count"], "revenue": sales_today["revenue"] or Decimal("0")},
-                "top_products_30_days": list(top_products),
-                "by_category": [{**row, "units": row["units"] or 0} for row in by_category],
-            }
-        )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def stock_summary(request):
+    products = Product.objects.all()
+
+    total_value = 0
+    low_stock_count = 0
+    for product in products:
+        total_value = total_value + product.stock_value()
+        if product.is_low_stock():
+            low_stock_count = low_stock_count + 1
+
+    data = {
+        'total_products': products.count(),
+        'total_categories': Category.objects.count(),
+        'total_suppliers': Supplier.objects.count(),
+        'total_stock_value': total_value,
+        'low_stock_count': low_stock_count,
+    }
+    return Response(data)
 ```
 
-```python title="inventory/urls.py"
-from django.urls import include, path
-from rest_framework.routers import DefaultRouter
+**What it does**
 
-from . import views
+**`ModelViewSet`** gives you 6 actions from one class:
+
+| HTTP | URL | Action |
+|---|---|---|
+| GET | `/api/products/` | `list` |
+| POST | `/api/products/` | `create` |
+| GET | `/api/products/1/` | `retrieve` |
+| PUT | `/api/products/1/` | `update` (all fields) |
+| PATCH | `/api/products/1/` | `partial_update` (only changed fields) |
+| DELETE | `/api/products/1/` | `destroy` |
+
+- `queryset = ...` is a fixed list of rows (categories, suppliers).
+- `get_queryset(self)` is used when the rows depend on the request. `self.request.query_params.get('search')` reads `?search=...` from the URL. `name__icontains` means "contains, ignoring case". `category__name__icontains` goes through the foreign key to the category's name.
+- `permission_classes = [IsStaffOrReadOnly]` is our class from Step 8. `IsAuthenticated` is built into DRF: any logged-in user.
+
+**StockTransactionViewSet**
+- `http_method_names = ['get', 'post']` switches off PUT, PATCH and DELETE (they return **405 Method Not Allowed**). Editing old stock history would make the quantities wrong.
+- **`perform_create(self, serializer)`** is a hook DRF calls **after validation passes**, in place of a plain `serializer.save()`:
+  1. `serializer.save(created_by=self.request.user)` saves the transaction and fills in `created_by`, which the client can't send.
+  2. It then adds or subtracts the quantity on the product and saves the product.
+- Validation (`validate()` in the serializer) runs **first**, so a stock out bigger than the stock never reaches `perform_create`.
+
+**Function-based API views** (for things that aren't simple CRUD)
+- `@api_view(['POST'])` turns a normal function into an API view that only accepts POST. Any other method gets **405**.
+- `@permission_classes([AllowAny])` means anyone can call it. That's needed for **register**, because a new user has no token yet.
+- `register` follows the same steps as a form: `serializer = ...(data=request.data)` → `is_valid()` → `save()` → **201**, or return the `errors` with **400**.
+- `low_stock_products` loops through the products, keeps the low ones, and serializes the list with **`many=True`** (many=True means "this is a list of objects, not one").
+- `stock_summary` adds up `stock_value()` for every product and returns a plain dictionary. `Response(...)` turns any dict into JSON.
+
+## 10. Project urls.py (router + JWT URLs)
+
+Open `inventoryproject/urls.py` and replace everything with:
+
+```python title="inventoryproject/urls.py"
+from django.contrib import admin
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from inventoryapp import api_views
 
 router = DefaultRouter()
-router.register("categories", views.CategoryViewSet)
-router.register("suppliers", views.SupplierViewSet)
-router.register("customers", views.CustomerViewSet)
-router.register("products", views.ProductViewSet)
-router.register("stock-movements", views.StockMovementViewSet)
-router.register("purchases", views.PurchaseViewSet)
-router.register("sales", views.SaleViewSet)
+router.register('categories', api_views.CategoryViewSet, basename='category')
+router.register('suppliers', api_views.SupplierViewSet, basename='supplier')
+router.register('products', api_views.ProductViewSet, basename='product')
+router.register('stock', api_views.StockTransactionViewSet, basename='stock')
 
 urlpatterns = [
-    path("reports/summary/", views.ReportSummaryView.as_view(), name="report_summary"),
-    path("", include(router.urls)),
+    path('admin/', admin.site.urls),
+
+    # Register + JWT login
+    path('api/register/', api_views.register, name='register'),
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # Reports
+    path('api/low-stock/', api_views.low_stock_products, name='low_stock'),
+    path('api/summary/', api_views.stock_summary, name='stock_summary'),
+
+    # All API URLs made by the router
+    path('api/', include(router.urls)),
+
+    # Login / logout links on the browsable API pages
+    path('api-auth/', include('rest_framework.urls')),
 ]
 ```
 
-Project URLs for now (the web pages come in step 12):
+**What it does**
+- `from inventoryapp import api_views` imports the whole file, so we write `api_views.register`, `api_views.ProductViewSet` and so on.
+- Each `router.register('products', ProductViewSet, basename='product')` line creates both `products/` and `products/<id>/` for all 6 actions.
+- `basename` is a prefix for URL names (`product-list`, `product-detail`). It's **required** when a viewset uses `get_queryset` instead of `queryset`.
+- The function views (`register`, `low_stock_products`, `stock_summary`) are added with plain `path(...)`, just like normal Django views.
+- `TokenObtainPairView` is the **login** endpoint: POST a username and password, get two tokens. `TokenRefreshView` swaps a refresh token for a new access token.
+- `api-auth/` adds a **Log in** link to DRF's browser pages.
 
-```python title="ims/urls.py"
-from django.contrib import admin
-from django.urls import include, path
+## 11. Switch on JWT (the one extra setting)
 
-urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/", include("inventory.urls")),
-    path("api-auth/", include("rest_framework.urls")),
-]
-```
+Open `inventoryproject/settings.py` again and add this block **at the very end of the file**:
 
-```bash
-python manage.py runserver
-```
-
-Open <http://127.0.0.1:8000/api/>. **Checkpoint 2:** the whole API is browsable.
-
-## 10. Seed demo data
-
-```bash
-mkdir inventory\management\commands
-New-Item inventory\management\__init__.py, inventory\management\commands\__init__.py
-```
-
-> [!NOTE]
-> Git Bash/macOS/Linux: `mkdir -p inventory/management/commands && touch inventory/management/__init__.py inventory/management/commands/__init__.py`
-
-```python title="inventory/management/commands/seed.py"
-from decimal import Decimal
-
-from django.contrib.auth.models import User
-from django.core.management.base import BaseCommand
-
-from inventory import services
-from inventory.models import Category, Customer, Product, Purchase, StockMovement, Supplier
-
-PRODUCTS = [
-    # name, sku, category, cost, price, opening stock, reorder level
-    ("USB-C Cable 1m", "ELEC-001", "Electronics", "120", "249", 80, 20),
-    ("Wireless Mouse", "ELEC-002", "Electronics", "450", "799", 25, 10),
-    ("Keyboard", "ELEC-003", "Electronics", "700", "1199", 6, 8),
-    ("A4 Paper Ream", "STAT-001", "Stationery", "220", "320", 40, 15),
-    ("Gel Pen (Blue)", "STAT-002", "Stationery", "8", "15", 300, 100),
-    ("Stapler", "STAT-003", "Stationery", "90", "160", 4, 5),
-    ("Office Chair", "FURN-001", "Furniture", "3500", "5499", 3, 2),
-]
-
-
-class Command(BaseCommand):
-    help = "Create demo users, categories, suppliers, products, a purchase and a sale."
-
-    def handle(self, *args, **options):
-        admin, created = User.objects.get_or_create(
-            username="admin", defaults={"is_staff": True, "is_superuser": True}
-        )
-        admin.set_password("admin123")
-        admin.save()
-        staff, _ = User.objects.get_or_create(username="staff", defaults={"first_name": "Sam"})
-        staff.set_password("pass1234")
-        staff.save()
-
-        if Product.objects.exists():
-            self.stdout.write("Products already exist; skipping product data.")
-            return
-
-        supplier = Supplier.objects.create(name="Acme Distributors", contact_person="Raj", phone="9811111111")
-        Supplier.objects.create(name="Paper World", contact_person="Anita", phone="9822222222")
-        customer = Customer.objects.create(name="Rohan Gupta", phone="9833333333")
-
-        for name, sku, cat, cost, price, stock, reorder in PRODUCTS:
-            category, _ = Category.objects.get_or_create(name=cat)
-            product = Product.objects.create(
-                name=name, sku=sku, category=category, supplier=supplier,
-                cost_price=Decimal(cost), selling_price=Decimal(price), reorder_level=reorder,
-            )
-            services.record_movement(
-                product=product, movement_type=StockMovement.Type.IN, quantity=stock,
-                user=admin, note="Opening stock",
-            )
-
-        keyboard = Product.objects.get(sku="ELEC-003")
-        purchase = Purchase.objects.create(
-            supplier=supplier, product=keyboard, quantity=20, unit_cost=Decimal("680"), created_by=admin
-        )
-        services.receive_purchase(purchase, user=admin)
-        Purchase.objects.create(
-            supplier=supplier, product=Product.objects.get(sku="STAT-003"), quantity=30,
-            unit_cost=Decimal("85"), created_by=admin,
-        )  # left PENDING so you can test /receive/
-
-        services.create_sale(
-            items=[
-                {"product": Product.objects.get(sku="ELEC-002"), "quantity": 2},
-                {"product": Product.objects.get(sku="STAT-002"), "quantity": 10},
-            ],
-            customer=customer,
-            user=staff,
-        )
-        self.stdout.write(self.style.SUCCESS("Seeded! Logins -> admin/admin123 (manager), staff/pass1234"))
-```
-
-```bash
-python manage.py seed
-```
-
-## 11. Test the API (Postman)
-
-```flow
-Register | POST /api/auth/register/ to create a normal staff user
-Login | POST /api/auth/login/ to get access + refresh tokens
-Call APIs | header Authorization: Bearer <access>
-Refresh | POST /api/auth/refresh/ with {"refresh": "..."} when access expires
-```
-
-**1. Register** (`POST /api/auth/register/`, no token needed):
-
-```json
-{ "username": "cashier1", "password": "Counter@2024", "password2": "Counter@2024", "email": "c1@shop.com" }
-```
-
-**2. Login** (`POST /api/auth/login/`):
-
-```json
-{ "username": "admin", "password": "admin123" }
-```
-
-Copy `access` → Postman **Authorization** tab → **Bearer Token**.
-
-**3. Create a product** (`POST /api/products/`, manager only):
-
-```json
-{
-  "name": "HDMI Cable 2m",
-  "sku": "elec-004",
-  "category": 1,
-  "supplier": 1,
-  "cost_price": "150.00",
-  "selling_price": "299.00",
-  "reorder_level": 10
+```python title="inventoryproject/settings.py — add at the end"
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
 }
 ```
 
-It's created with `quantity: 0` and the SKU is upper-cased to `ELEC-004`. Sending `"quantity": 500` does nothing, because the field is read-only.
+**What it does**
+- `DEFAULT_AUTHENTICATION_CLASSES` tells DRF **how to work out who the user is** on each API request.
+- `JWTAuthentication` reads the header `Authorization: Bearer <token>` (what Postman sends).
+- `SessionAuthentication` reads the normal Django login cookie (what the browser sends after you log in through `api-auth/`).
 
-**4. Stock in by purchase** (`POST /api/purchases/` then `POST /api/purchases/{id}/receive/`):
+> [!IMPORTANT] Is this block really needed?
+> **Yes, this one is.** Without it, DRF only checks the session cookie and ignores the `Bearer` token completely. Postman would always get *"Authentication credentials were not provided"* even with a valid token. You don't need anything else: no token lifetimes, no pagination and no `LOGIN_URL`. The defaults are fine (access token lasts 5 minutes, refresh token lasts 1 day).
 
-```json
-{ "supplier": 1, "product": 8, "quantity": 50, "unit_cost": "140.00" }
-```
+## 12. Test the API
 
-**5. Sell** (`POST /api/sales/`): one request, many items:
+Restart the server if it isn't running (`python manage.py runserver`).
+
+### In the browser
+
+1. Open `http://127.0.0.1:8000/api/`. You'll see the router's list of endpoints.
+2. Click **Log in** (top right) and log in as your superuser.
+3. Open `/api/products/`, fill in the form at the bottom and click **POST**.
+
+### In Postman (with JWT)
+
+**Step 1: register a worker account** (no token needed)
+
+- Method `POST`, URL `http://127.0.0.1:8000/api/register/`
+- Body → raw → JSON:
 
 ```json
 {
-  "customer": 1,
-  "tax_percentage": "18.00",
-  "items": [
-    { "product": 1, "quantity": 3 },
-    { "product": 4, "quantity": 2 }
-  ]
+    "username": "worker1",
+    "email": "worker1@example.com",
+    "password": "Store@123"
 }
 ```
 
-Response:
+The response is **201** with `id`, `username` and `email`. The password is **not** shown because it's `write_only`.
+
+**Step 2: log in and get tokens**
+
+- Method `POST`, URL `http://127.0.0.1:8000/api/token/`
+- Body → raw → JSON:
 
 ```json
 {
-  "id": 2,
-  "customer": 1,
-  "customer_name": "Rohan Gupta",
-  "items": [
-    { "id": 3, "product": 1, "product_name": "USB-C Cable 1m", "quantity": 3, "unit_price": "249.00", "line_total": "747.00" },
-    { "id": 4, "product": 4, "product_name": "A4 Paper Ream", "quantity": 2, "unit_price": "320.00", "line_total": "640.00" }
-  ],
-  "tax_percentage": "18.00",
-  "sub_total": "1387.00",
-  "tax_amount": "249.66",
-  "grand_total": "1636.66",
-  ...
+    "username": "worker1",
+    "password": "Store@123"
 }
 ```
 
-Now try to sell **more than you have**:
+The response has two tokens:
 
 ```json
-{ "items": [{ "product": 7, "quantity": 999 }] }
+{
+    "refresh": "eyJhbGciOiJIUzI1NiIs...",
+    "access": "eyJhbGciOiJIUzI1NiIs..."
+}
 ```
 
-```json
-{ "items": ["Not enough stock for Office Chair: 3 available, 999 requested."] }
-```
+**Step 3: use the access token.** In every other request, open the **Authorization** tab, choose **Bearer Token** and paste the `access` value. Postman then sends the header `Authorization: Bearer eyJhbGci...` for you.
 
-Nothing was saved, so the stock is unchanged. That's `transaction.atomic()` at work.
+**Step 4: try these requests**
 
-**6. Manual adjustment** (`POST /api/stock-movements/`), e.g. 2 damaged pens:
+| Login as | Request | Body (raw JSON) | Expected |
+|---|---|---|---|
+| worker1 | `GET /api/products/` | | 200, list of products |
+| worker1 | `POST /api/products/` | any | 403, workers can't add products |
+| manager | `POST /api/products/` | `{"name": "Mouse", "sku": "ms-01", "category": 1, "unit": "pcs", "price": "499.00", "reorder_level": 5}` | 201, `sku` saved as `MS-01`, `quantity` 0 |
+| manager | `POST /api/products/` | `{"name": "Bad", "sku": "x1", "category": 1, "price": "0"}` | 400, price must be greater than 0 |
+| worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "in", "quantity": 50, "note": "From ABC Traders"}` | 201, USB Cable quantity becomes 50 |
+| worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "out", "quantity": 70}` | 400, *Not enough stock. Only 50 left* |
+| worker1 | `POST /api/stock/` | `{"product": 1, "transaction_type": "out", "quantity": 46, "note": "Sold"}` | 201, quantity becomes 4 |
+| worker1 | `GET /api/low-stock/` | | 200, USB Cable is there (4 ≤ 5) |
+| worker1 | `GET /api/summary/` | | 200, totals |
+| worker1 | `PUT /api/stock/1/` | any | 405 Method Not Allowed |
+| *(no token)* | `GET /api/products/` | | 401 Unauthorized |
 
-```json
-{ "product": 5, "movement_type": "OUT", "quantity": 2, "note": "Damaged" }
-```
+For the **manager** rows, get a token for your superuser with `POST /api/token/` and use that one.
 
-**7. Queries to try:**
+**Step 5: when the access token expires** (after 5 minutes you get 401 *"Token is invalid or expired"*):
 
-```text
-GET /api/products/?search=cable
-GET /api/products/?category=1&min_price=200&max_price=1000&ordering=-selling_price
-GET /api/products/?low_stock=true
-GET /api/products/low-stock/
-GET /api/products/1/movements/
-GET /api/stock-movements/?reason=SALE
-GET /api/purchases/?status=PENDING
-GET /api/reports/summary/
-```
+- `POST http://127.0.0.1:8000/api/token/refresh/` with body `{"refresh": "<your refresh token>"}`
+- You get a new `access` token. Paste it into the Bearer Token box again.
 
-Log in as `staff` and `POST /api/products/` returns **403**, because only managers can do that.
+> [!REMEMBER] Status codes to say in the interview
+> **200** OK · **201** Created · **204** Deleted (No Content) · **400** validation error · **401** not logged in / bad token · **403** logged in but not allowed · **404** not found · **405** method not allowed
 
-## 12. Web dashboard (MVT side)
+> [!TIP] Checkpoint
+> If stock in, stock out and the "not enough stock" error all work in Postman, **Part B is done**.
 
-### Forms
+## Part C — Web pages (MVT)
 
-A sale has many lines, so the HTML side uses a **formset**: the same small form repeated several times.
+Now the normal Django side: HTML pages with signup, login, products and stock in/out. This is the same style as the Player app: `request.POST.get(...)`, `objects.create(...)`, `redirect(...)`.
 
-```python title="inventory/forms.py"
-from django import forms
+## 13. views.py (web pages)
 
-from .models import Customer, Product, StockMovement
+Open `inventoryapp/views.py` and replace everything with:
 
-
-class ProductForm(forms.ModelForm):
-    class Meta:
-        model = Product
-        fields = [
-            "name", "sku", "category", "supplier", "description",
-            "cost_price", "selling_price", "reorder_level", "is_active",
-        ]
-        widgets = {"description": forms.Textarea(attrs={"rows": 2})}
-
-    def clean_sku(self):
-        return self.cleaned_data["sku"].strip().upper()
-
-    def clean(self):
-        cleaned = super().clean()
-        cost, price = cleaned.get("cost_price"), cleaned.get("selling_price")
-        if cost is not None and price is not None and price < cost:
-            self.add_error("selling_price", "Selling price cannot be below cost price.")
-        return cleaned
-
-
-class StockMovementForm(forms.Form):
-    product = forms.ModelChoiceField(queryset=Product.objects.filter(is_active=True))
-    movement_type = forms.ChoiceField(choices=StockMovement.Type.choices)
-    quantity = forms.IntegerField(min_value=1)
-    note = forms.CharField(max_length=255, required=False)
-
-
-class SaleForm(forms.Form):
-    customer = forms.ModelChoiceField(queryset=Customer.objects.all(), required=False, empty_label="Walk-in customer")
-    tax_percentage = forms.DecimalField(max_digits=5, decimal_places=2, initial=18)
-
-
-class SaleLineForm(forms.Form):
-    product = forms.ModelChoiceField(queryset=Product.objects.filter(is_active=True, quantity__gt=0), required=False)
-    quantity = forms.IntegerField(min_value=1, required=False)
-
-
-SaleLineFormSet = forms.formset_factory(SaleLineForm, extra=4)
-```
-
-### Template views
-
-```python title="inventory/web_views.py"
-from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
+```python title="inventoryapp/views.py"
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import login, logout
+from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import ValidationError
-from django.core.paginator import Paginator
-from django.db.models import F, Q, Sum
-from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
 
-from . import services
-from .forms import ProductForm, SaleForm, SaleLineFormSet, StockMovementForm
-from .models import Category, Product, Sale, StockMovement
+from .models import Category, Supplier, Product, StockTransaction
 
 
-@login_required
+# ---------------- Signup / Login / Logout ----------------
+
+def signup_view(request):
+    if request.method == 'POST':
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            return redirect('dashboard')
+    else:
+        form = UserCreationForm()
+    return render(request, 'signup.html', {'form': form})
+
+
+def login_view(request):
+    if request.method == 'POST':
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            login(request, form.get_user())
+            return redirect('dashboard')
+    else:
+        form = AuthenticationForm()
+    return render(request, 'login.html', {'form': form})
+
+
+def logout_view(request):
+    logout(request)
+    return redirect('login')
+
+
+# ---------------- Dashboard ----------------
+
+@login_required(login_url='login')
 def dashboard(request):
-    products = Product.objects.filter(is_active=True)
-    low_stock = products.filter(quantity__lte=F("reorder_level")).select_related("category").order_by("quantity")
-    today_sales = Sale.objects.filter(created_at__date=timezone.localdate())
-    stats = {
-        "Products": products.count(),
-        "Units in stock": products.aggregate(n=Sum("quantity"))["n"] or 0,
-        "Low stock": low_stock.count(),
-        "Sales today": today_sales.count(),
-        "Revenue today (₹)": today_sales.aggregate(n=Sum("grand_total"))["n"] or 0,
+    products = Product.objects.all()
+
+    total_value = 0
+    low_stock_products = []
+    for product in products:
+        total_value = total_value + product.stock_value()
+        if product.is_low_stock():
+            low_stock_products.append(product)
+
+    context = {
+        'total_products': products.count(),
+        'total_categories': Category.objects.count(),
+        'total_suppliers': Supplier.objects.count(),
+        'total_value': total_value,
+        'low_stock_products': low_stock_products,
+        'recent_transactions': StockTransaction.objects.all().order_by('-created_at')[:5],
     }
-    return render(request, "inventory/dashboard.html", {
-        "stats": stats,
-        "low_stock": low_stock[:10],
-        "movements": StockMovement.objects.select_related("product", "created_by")[:10],
-        "recent_sales": Sale.objects.select_related("customer")[:5],
-    })
+    return render(request, 'dashboard.html', context)
 
 
-@login_required
+# ---------------- Products ----------------
+
+@login_required(login_url='login')
 def product_list(request):
-    q = request.GET.get("q", "").strip()
-    category = request.GET.get("category", "")
-    products = Product.objects.select_related("category").filter(is_active=True)
-    if q:
-        products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
-    if category:
-        products = products.filter(category_id=category)
-    if request.GET.get("low"):
-        products = products.filter(quantity__lte=F("reorder_level"))
-    page = Paginator(products, 15).get_page(request.GET.get("page"))
-    return render(request, "inventory/product_list.html", {
-        "page": page, "q": q, "category": category, "categories": Category.objects.all(),
-    })
+    search = request.GET.get('search', '')
+    if search:
+        products = Product.objects.filter(name__icontains=search).order_by('name')
+    else:
+        products = Product.objects.all().order_by('name')
+    return render(request, 'product_list.html', {'products': products, 'search': search})
 
 
-@staff_member_required
-def product_form(request, pk=None):
-    product = get_object_or_404(Product, pk=pk) if pk else None
-    form = ProductForm(request.POST or None, instance=product)
-    if request.method == "POST" and form.is_valid():
-        product = form.save()
-        messages.success(request, f"Saved {product.name}.")
-        return redirect("product_list")
-    return render(request, "inventory/product_form.html", {"form": form, "product": product})
+@login_required(login_url='login')
+def add_product(request):
+    if not request.user.is_staff:
+        return redirect('product_list')
 
+    error = ''
 
-@login_required
-def stock_adjust(request):
-    form = StockMovementForm(request.POST or None, initial={"product": request.GET.get("product")})
-    if request.method == "POST" and form.is_valid():
-        try:
-            movement = services.record_movement(user=request.user, **form.cleaned_data)
-        except ValidationError as exc:
-            form.add_error("quantity", exc.messages)
+    if request.method == 'POST':
+        sku = request.POST.get('sku').upper()
+
+        if Product.objects.filter(sku=sku).exists():
+            error = 'A product with SKU ' + sku + ' already exists.'
         else:
-            messages.success(request, f"Recorded: {movement}")
-            return redirect("dashboard")
-    return render(request, "inventory/stock_form.html", {"form": form})
-
-
-@login_required
-def sale_create(request):
-    form = SaleForm(request.POST or None)
-    formset = SaleLineFormSet(request.POST or None)
-    if request.method == "POST" and form.is_valid() and formset.is_valid():
-        lines = [f.cleaned_data for f in formset if f.cleaned_data.get("product") and f.cleaned_data.get("quantity")]
-        try:
-            sale = services.create_sale(
-                items=lines,
-                customer=form.cleaned_data["customer"],
-                tax_percentage=form.cleaned_data["tax_percentage"],
-                user=request.user,
+            Product.objects.create(
+                name=request.POST.get('name'),
+                sku=sku,
+                category_id=request.POST.get('category'),
+                supplier_id=request.POST.get('supplier') or None,   # empty dropdown -> no supplier
+                unit=request.POST.get('unit'),
+                price=request.POST.get('price'),
+                reorder_level=request.POST.get('reorder_level'),
             )
-        except ValidationError as exc:
-            form.add_error(None, exc.messages)
+            return redirect('product_list')
+
+    context = {
+        'categories': Category.objects.all().order_by('name'),
+        'suppliers': Supplier.objects.all().order_by('name'),
+        'error': error,
+    }
+    return render(request, 'add_product.html', context)
+
+
+@login_required(login_url='login')
+def edit_product(request, id):
+    if not request.user.is_staff:
+        return redirect('product_list')
+
+    product = get_object_or_404(Product, id=id)
+    error = ''
+
+    if request.method == 'POST':
+        sku = request.POST.get('sku').upper()
+
+        if Product.objects.filter(sku=sku).exclude(id=product.id).exists():
+            error = 'A product with SKU ' + sku + ' already exists.'
         else:
-            messages.success(request, f"Sale {sale} saved.")
-            return redirect("sale_detail", pk=sale.pk)
-    return render(request, "inventory/sale_form.html", {"form": form, "formset": formset})
+            product.name = request.POST.get('name')
+            product.sku = sku
+            product.category_id = request.POST.get('category')
+            product.supplier_id = request.POST.get('supplier') or None
+            product.unit = request.POST.get('unit')
+            product.price = request.POST.get('price')
+            product.reorder_level = request.POST.get('reorder_level')
+            product.save()
+            return redirect('product_list')
+
+    context = {
+        'product': product,
+        'categories': Category.objects.all().order_by('name'),
+        'suppliers': Supplier.objects.all().order_by('name'),
+        'error': error,
+    }
+    return render(request, 'edit_product.html', context)
 
 
-@login_required
-def sale_detail(request, pk):
-    sale = get_object_or_404(Sale.objects.select_related("customer", "created_by"), pk=pk)
-    return render(request, "inventory/sale_detail.html", {"sale": sale, "items": sale.items.select_related("product")})
+@login_required(login_url='login')
+def delete_product(request, id):
+    if not request.user.is_staff:
+        return redirect('product_list')
+
+    product = get_object_or_404(Product, id=id)
+    if request.method == 'POST':
+        product.delete()
+    return redirect('product_list')
+
+
+# ---------------- Stock In / Out ----------------
+
+@login_required(login_url='login')
+def stock_entry(request):
+    error = ''
+
+    if request.method == 'POST':
+        product = get_object_or_404(Product, id=request.POST.get('product'))
+        transaction_type = request.POST.get('transaction_type')
+        quantity = int(request.POST.get('quantity'))
+        note = request.POST.get('note')
+
+        if quantity <= 0:
+            error = 'Quantity must be greater than 0.'
+        elif transaction_type == 'out' and quantity > product.quantity:
+            error = 'Not enough stock. Only ' + str(product.quantity) + ' left for ' + product.name + '.'
+        else:
+            # 1. save the transaction
+            StockTransaction.objects.create(
+                product=product,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                note=note,
+                created_by=request.user,
+            )
+            # 2. update the product quantity
+            if transaction_type == 'in':
+                product.quantity = product.quantity + quantity
+            else:
+                product.quantity = product.quantity - quantity
+            product.save()
+            return redirect('transaction_list')
+
+    products = Product.objects.all().order_by('name')
+    return render(request, 'stock_entry.html', {'products': products, 'error': error})
+
+
+@login_required(login_url='login')
+def transaction_list(request):
+    transaction_type = request.GET.get('type', '')
+    if transaction_type:
+        transactions = StockTransaction.objects.filter(transaction_type=transaction_type).order_by('-created_at')
+    else:
+        transactions = StockTransaction.objects.all().order_by('-created_at')
+    return render(request, 'transaction_list.html', {'transactions': transactions})
 ```
 
-> [!NOTE]
-> `staff_member_required` (from `django.contrib.admin`) allows only users with `is_staff=True`. Other users are sent to the admin login page.
+**What each part does**
 
-```python title="inventory/web_urls.py"
+**Signup, login and logout** (same as your Authentication notes)
+- `UserCreationForm` is Django's ready-made signup form (username, password, confirm password). `form.save()` creates the user with a hashed password.
+- `AuthenticationForm` is the ready-made login form. `form.is_valid()` is `True` only when the username and password are correct.
+- `login(request, user)` stores the user in the session (a cookie). `logout(request)` clears it.
+- New signups are **not staff**, so they are workers. The manager can tick **Staff status** in `/admin/`.
+
+**`@login_required(login_url='login')`**
+- If nobody is logged in, Django redirects to the URL named `'login'` instead of showing the page.
+
+**dashboard**
+- It loops through every product once: adds `stock_value()` to the total and collects the low-stock ones in a list.
+- `order_by('-created_at')[:5]` gives the 5 newest transactions. `[:5]` works like slicing a Python list.
+
+**product_list**
+- `request.GET.get('search', '')` reads the search box from the URL (`?search=usb`).
+- The template checks `user.is_staff` directly to show or hide the Add, Edit and Delete buttons, so we don't pass anything extra.
+
+**add_product / edit_product**
+- `if not request.user.is_staff: return redirect(...)` blocks workers, even if they type the URL by hand.
+- `.upper()` saves the SKU in capitals, the same as the serializer does.
+- We check the SKU ourselves (`filter(sku=sku).exists()`) and show a friendly error, instead of letting the database crash on `unique=True`. In edit, `.exclude(id=product.id)` skips the product we're editing.
+- `category_id=request.POST.get('category')` saves a foreign key straight from the id in the dropdown.
+- `request.POST.get('supplier') or None`: when "No supplier" is picked, the value is the empty text `''`. `'' or None` gives `None`, which saves as NULL.
+- Notice there's **no quantity input**. Quantity only changes on the Stock page.
+
+**delete_product**
+- Only deletes on **POST** (a button in a form with `{% csrf_token %}`), so a link or a page refresh can't delete by accident.
+
+**stock_entry**
+- `int(request.POST.get('quantity'))` converts the text from the form into a number so we can compare it.
+- It makes the **same two checks** as the API serializer: quantity > 0, and no stock out bigger than the stock.
+- Then it does **the same two steps** as the API's `perform_create`: save a `StockTransaction`, then change `product.quantity` and save the product.
+
+**transaction_list**
+- Shows the full stock history. `?type=in` or `?type=out` filters it.
+
+## 14. inventoryapp/urls.py (web URLs)
+
+Create a **new file** `inventoryapp/urls.py`:
+
+```python title="inventoryapp/urls.py"
 from django.urls import path
-
-from . import web_views as views
+from . import views
 
 urlpatterns = [
-    path("", views.dashboard, name="dashboard"),
-    path("products/", views.product_list, name="product_list"),
-    path("products/new/", views.product_form, name="product_create"),
-    path("products/<int:pk>/edit/", views.product_form, name="product_edit"),
-    path("stock/adjust/", views.stock_adjust, name="stock_adjust"),
-    path("sales/new/", views.sale_create, name="sale_create"),
-    path("sales/<int:pk>/", views.sale_detail, name="sale_detail"),
+    path('', views.dashboard, name='dashboard'),
+    path('signup/', views.signup_view, name='signup'),
+    path('login/', views.login_view, name='login'),
+    path('logout/', views.logout_view, name='logout'),
+
+    path('products/', views.product_list, name='product_list'),
+    path('products/add/', views.add_product, name='add_product'),
+    path('products/edit/<int:id>/', views.edit_product, name='edit_product'),
+    path('products/delete/<int:id>/', views.delete_product, name='delete_product'),
+
+    path('stock/', views.stock_entry, name='stock_entry'),
+    path('transactions/', views.transaction_list, name='transaction_list'),
 ]
 ```
 
-Final project URLs. Replace the whole file:
+**What it does**
+- Each `path('url/', view_function, name='...')` connects a URL to a view.
+- `<int:id>` takes the number from the URL, for example `/products/edit/3/`, and passes it to the view as `id=3`.
+- `name='product_list'` lets you write `redirect('product_list')` in views and `{% url 'product_list' %}` in templates.
 
-```python title="ims/urls.py"
+## 15. Final project urls.py
+
+Open `inventoryproject/urls.py` again and replace everything. It's the same as Step 10 with **one new line** at the bottom:
+
+```python title="inventoryproject/urls.py"
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from inventoryapp import api_views
+
+router = DefaultRouter()
+router.register('categories', api_views.CategoryViewSet, basename='category')
+router.register('suppliers', api_views.SupplierViewSet, basename='supplier')
+router.register('products', api_views.ProductViewSet, basename='product')
+router.register('stock', api_views.StockTransactionViewSet, basename='stock')
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/", include("inventory.urls")),
-    path("api-auth/", include("rest_framework.urls")),
-    path("accounts/", include("django.contrib.auth.urls")),  # login / logout pages
-    path("", include("inventory.web_urls")),
+    path('admin/', admin.site.urls),
+
+    # Register + JWT login
+    path('api/register/', api_views.register, name='register'),
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # Reports
+    path('api/low-stock/', api_views.low_stock_products, name='low_stock'),
+    path('api/summary/', api_views.stock_summary, name='stock_summary'),
+
+    # All API URLs made by the router
+    path('api/', include(router.urls)),
+
+    # Login / logout links on the browsable API pages
+    path('api-auth/', include('rest_framework.urls')),
+
+    # Web pages (Part C)
+    path('', include('inventoryapp.urls')),   # <--- ADDED
 ]
 ```
 
-### Templates
+**What it does**
+- `path('', include('inventoryapp.urls'))` hands every other URL (`/`, `/login/`, `/products/`...) to the app's `urls.py` from Step 14.
+- It goes **last**, so `/admin/` and `/api/` are matched first.
 
-Create these folders **next to `manage.py`**:
+## 16. Templates
 
-```bash
-mkdir templates\registration, templates\inventory
-```
+All HTML files go in the `templates/` folder next to `manage.py` (the folder from Step 1). Every page **extends** one base page, so the menu and styles are written only once.
 
-```django title="templates/base.html"
-<!doctype html>
+### base.html
+
+```html title="templates/base.html"
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}IMS{% endblock %} · Inventory</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <style>
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
-    .stats article { margin: 0; text-align: center; }
-    .stats strong { font-size: 1.8rem; display: block; }
-    .low { color: #b91c1c; font-weight: 600; }
-    .IN { color: #15803d; } .OUT { color: #b91c1c; }
-    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
-    .right { text-align: right; }
-    @media print { header, .no-print { display: none; } }
-  </style>
+    <meta charset="UTF-8">
+    <title>Inventory Management</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f4f6f8; }
+        nav { background: #2d6a4f; padding: 14px 20px; }
+        nav a { color: white; margin-right: 16px; text-decoration: none; font-weight: bold; }
+        .container { max-width: 1000px; margin: 20px auto; background: white; padding: 20px; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f0f0f0; }
+        input, select, textarea { width: 100%; padding: 8px; margin: 4px 0 12px; box-sizing: border-box; }
+        button { padding: 8px 16px; background: #2d6a4f; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .danger { background: #d73a49; }
+        .error { color: #d73a49; font-weight: bold; }
+        .low { color: #d73a49; font-weight: bold; }
+        .inline { display: inline; }
+        .box { display: inline-block; width: 200px; padding: 15px; margin: 5px; background: #e9f5ee; border-radius: 8px; }
+        .box h2 { margin: 0; }
+    </style>
 </head>
 <body>
-  <header class="container">
     <nav>
-      <ul><li><strong>📦 IMS</strong></li></ul>
-      {% if user.is_authenticated %}
-      <ul>
-        <li><a href="{% url 'dashboard' %}">Dashboard</a></li>
-        <li><a href="{% url 'product_list' %}">Products</a></li>
-        <li><a href="{% url 'sale_create' %}">New sale</a></li>
-        <li><a href="{% url 'stock_adjust' %}">Adjust stock</a></li>
-        <li><a href="/api/">API</a></li>
-        <li>
-          <form method="post" action="{% url 'logout' %}" style="margin:0">
-            {% csrf_token %}
-            <button type="submit" class="secondary outline" style="padding:4px 12px">Logout ({{ user.username }})</button>
-          </form>
-        </li>
-      </ul>
-      {% endif %}
+        {% if user.is_authenticated %}
+            <a href="{% url 'dashboard' %}">Dashboard</a>
+            <a href="{% url 'product_list' %}">Products</a>
+            <a href="{% url 'stock_entry' %}">Stock In / Out</a>
+            <a href="{% url 'transaction_list' %}">History</a>
+            {% if user.is_staff %}
+                <a href="/admin/">Admin Panel</a>
+            {% endif %}
+            <a href="{% url 'logout' %}">Logout ({{ user.username }})</a>
+        {% else %}
+            <a href="{% url 'login' %}">Login</a>
+            <a href="{% url 'signup' %}">Sign up</a>
+        {% endif %}
     </nav>
-  </header>
-  <main class="container">
-    {% for message in messages %}
-      <article style="padding:.75rem 1rem">{{ message }}</article>
-    {% endfor %}
-    {% block content %}{% endblock %}
-  </main>
+
+    <div class="container">
+        {% block content %}
+        {% endblock %}
+    </div>
 </body>
 </html>
 ```
 
-```django title="templates/registration/login.html"
-{% extends "base.html" %}
-{% block title %}Login{% endblock %}
+**What it does**
+- This is the **layout** shared by every page: the top menu plus a white box in the middle.
+- `{% block content %}{% endblock %}` is an empty slot. Each page fills it with its own HTML.
+- `user` is always available in templates. `user.is_authenticated` switches the menu between "logged in" links and Login / Sign up. `user.is_staff` shows the Admin Panel link only to managers.
+- `{% url 'dashboard' %}` turns a URL **name** from Step 14 into the real path.
+
+### login.html
+
+```html title="templates/login.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article style="max-width:420px;margin:3rem auto">
-  <h2>Sign in</h2>
-  {% if form.errors %}<p class="low">Wrong username or password.</p>{% endif %}
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <input type="hidden" name="next" value="{{ next }}">
-    <button type="submit">Log in</button>
-  </form>
-  <small>Demo: admin/admin123 (manager) · staff/pass1234</small>
-</article>
+    <h2>Login</h2>
+    <form method="POST">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Login</button>
+    </form>
+    <p>No account? <a href="{% url 'signup' %}">Sign up</a></p>
 {% endblock %}
 ```
 
-```django title="templates/inventory/dashboard.html"
-{% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
+**What it does**
+- `{% extends 'base.html' %}` means "use base.html and put my `content` block into its slot".
+- `{{ form.as_p }}` prints the form fields from the view, each inside a `<p>`, including error messages.
+- `{% csrf_token %}` is **required in every POST form**. Without it Django returns **403 CSRF verification failed**.
+
+### signup.html
+
+```html title="templates/signup.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<h2>Dashboard</h2>
-<section class="stats">
-  {% for label, value in stats.items %}
-    <article><strong>{{ value }}</strong>{{ label }}</article>
-  {% endfor %}
-</section>
+    <h2>Sign up</h2>
+    <form method="POST">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Create account</button>
+    </form>
+    <p>Already have an account? <a href="{% url 'login' %}">Login</a></p>
+{% endblock %}
+```
 
-<div class="grid-2">
-  <section>
-    <h3>⚠ Low stock</h3>
-    <table>
-      <thead><tr><th>Product</th><th class="right">Qty</th><th class="right">Reorder at</th><th></th></tr></thead>
-      <tbody>
-      {% for p in low_stock %}
-        <tr>
-          <td>{{ p.name }}<br><small>{{ p.sku }}</small></td>
-          <td class="right low">{{ p.quantity }}</td>
-          <td class="right">{{ p.reorder_level }}</td>
-          <td><a href="{% url 'stock_adjust' %}?product={{ p.pk }}">Restock</a></td>
-        </tr>
-      {% empty %}
-        <tr><td colspan="4">All stocked up 🎉</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </section>
+**What it does**
+- It's the same pattern as login, but `form` is a `UserCreationForm`. Django prints the password rules and errors like *"A user with that username already exists."* for you.
 
-  <section>
+### dashboard.html
+
+```html title="templates/dashboard.html"
+{% extends 'base.html' %}
+
+{% block content %}
+    <h2>Dashboard</h2>
+    <p>Welcome, {{ user.username }}{% if user.is_staff %} (Manager){% endif %}</p>
+
+    <div class="box"><p>Products</p><h2>{{ total_products }}</h2></div>
+    <div class="box"><p>Categories</p><h2>{{ total_categories }}</h2></div>
+    <div class="box"><p>Suppliers</p><h2>{{ total_suppliers }}</h2></div>
+    <div class="box"><p>Stock value</p><h2>Rs. {{ total_value }}</h2></div>
+
+    <h3>Low stock ({{ low_stock_products|length }})</h3>
+    {% if low_stock_products %}
+        <table>
+            <tr>
+                <th>Product</th>
+                <th>SKU</th>
+                <th>In stock</th>
+                <th>Reorder level</th>
+            </tr>
+            {% for product in low_stock_products %}
+            <tr>
+                <td>{{ product.name }}</td>
+                <td>{{ product.sku }}</td>
+                <td class="low">{{ product.quantity }}</td>
+                <td>{{ product.reorder_level }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>All products have enough stock.</p>
+    {% endif %}
+
     <h3>Recent stock movements</h3>
-    <table>
-      <thead><tr><th>Product</th><th class="right">Change</th><th class="right">Balance</th><th>Why</th></tr></thead>
-      <tbody>
-      {% for m in movements %}
-        <tr>
-          <td>{{ m.product.name }}</td>
-          <td class="right {{ m.movement_type }}">{% if m.movement_type == "IN" %}+{% else %}-{% endif %}{{ m.quantity }}</td>
-          <td class="right">{{ m.balance_after }}</td>
-          <td><small>{{ m.get_reason_display }} {{ m.note }}</small></td>
-        </tr>
-      {% empty %}
-        <tr><td colspan="4">No movements yet.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </section>
-</div>
-
-<h3>Recent sales</h3>
-<table>
-  <thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th class="right">Total (₹)</th></tr></thead>
-  <tbody>
-  {% for s in recent_sales %}
-    <tr>
-      <td><a href="{% url 'sale_detail' s.pk %}">{{ s }}</a></td>
-      <td>{{ s.customer.name|default:"Walk-in" }}</td>
-      <td>{{ s.created_at|date:"d M Y H:i" }}</td>
-      <td class="right">{{ s.grand_total }}</td>
-    </tr>
-  {% empty %}
-    <tr><td colspan="4">No sales yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+    {% if recent_transactions %}
+        <table>
+            <tr>
+                <th>When</th>
+                <th>Product</th>
+                <th>Type</th>
+                <th>Qty</th>
+                <th>By</th>
+            </tr>
+            {% for t in recent_transactions %}
+            <tr>
+                <td>{{ t.created_at|date:"d M Y, H:i" }}</td>
+                <td>{{ t.product.name }}</td>
+                <td>{{ t.get_transaction_type_display }}</td>
+                <td>{{ t.quantity }}</td>
+                <td>{{ t.created_by.username }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No stock movements yet.</p>
+    {% endif %}
 {% endblock %}
 ```
 
-```django title="templates/inventory/product_list.html"
-{% extends "base.html" %}
-{% block title %}Products{% endblock %}
+**What it does**
+- `{{ total_products }}` prints values from the view's `context` dictionary.
+- `|length` is a **filter**: it counts the items in a list. `|date:"d M Y, H:i"` formats a date as `15 Jan 2030, 10:30`.
+- `get_transaction_type_display` prints the label ("Stock In") instead of the stored value ("in"). Django creates `get_<field>_display` for every field with `choices`.
+- `t.created_by.username` follows the foreign key to the user.
+
+### product_list.html
+
+```html title="templates/product_list.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<div style="display:flex;justify-content:space-between;align-items:center">
-  <h2>Products</h2>
-  {% if user.is_staff %}<a href="{% url 'product_create' %}" role="button">+ New product</a>{% endif %}
-</div>
+    <h2>Products</h2>
 
-<form method="get" class="grid">
-  <input type="search" name="q" value="{{ q }}" placeholder="Name or SKU">
-  <select name="category">
-    <option value="">All categories</option>
-    {% for c in categories %}
-      <option value="{{ c.pk }}" {% if category == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
-    {% endfor %}
-  </select>
-  <label><input type="checkbox" name="low" value="1" {% if request.GET.low %}checked{% endif %}> Low stock only</label>
-  <button type="submit">Filter</button>
-</form>
+    <form method="GET" action="{% url 'product_list' %}">
+        <input type="text" name="search" value="{{ search }}" placeholder="Search by name">
+        <button type="submit">Search</button>
+    </form>
 
-<table>
-  <thead>
-    <tr><th>SKU</th><th>Name</th><th>Category</th><th class="right">Price ₹</th><th class="right">Qty</th><th></th></tr>
-  </thead>
-  <tbody>
-  {% for p in page %}
-    <tr>
-      <td>{{ p.sku }}</td>
-      <td>{{ p.name }}</td>
-      <td>{{ p.category.name }}</td>
-      <td class="right">{{ p.selling_price }}</td>
-      <td class="right {% if p.is_low_stock %}low{% endif %}">{{ p.quantity }}</td>
-      <td>
-        <a href="{% url 'stock_adjust' %}?product={{ p.pk }}">Stock</a>
-        {% if user.is_staff %} · <a href="{% url 'product_edit' p.pk %}">Edit</a>{% endif %}
-      </td>
-    </tr>
-  {% empty %}
-    <tr><td colspan="6">No products found.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+    {% if user.is_staff %}
+        <p><a href="{% url 'add_product' %}">+ Add New Product</a></p>
+    {% endif %}
 
-<nav>
-  <ul>
-    {% if page.has_previous %}<li><a href="?q={{ q }}&category={{ category }}&page={{ page.previous_page_number }}">← Prev</a></li>{% endif %}
-    <li>Page {{ page.number }} of {{ page.paginator.num_pages }}</li>
-    {% if page.has_next %}<li><a href="?q={{ q }}&category={{ category }}&page={{ page.next_page_number }}">Next →</a></li>{% endif %}
-  </ul>
-</nav>
+    {% if products %}
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>SKU</th>
+                <th>Category</th>
+                <th>Supplier</th>
+                <th>Price</th>
+                <th>In stock</th>
+                <th>Value</th>
+                {% if user.is_staff %}<th>Actions</th>{% endif %}
+            </tr>
+            {% for product in products %}
+            <tr>
+                <td>{{ product.name }}</td>
+                <td>{{ product.sku }}</td>
+                <td>{{ product.category.name }}</td>
+                <td>{% if product.supplier %}{{ product.supplier.name }}{% else %}-{% endif %}</td>
+                <td>Rs. {{ product.price }}</td>
+                <td>
+                    {% if product.is_low_stock %}
+                        <span class="low">{{ product.quantity }} {{ product.unit }} (LOW)</span>
+                    {% else %}
+                        {{ product.quantity }} {{ product.unit }}
+                    {% endif %}
+                </td>
+                <td>Rs. {{ product.stock_value }}</td>
+                {% if user.is_staff %}
+                <td>
+                    <a href="{% url 'edit_product' product.id %}">Edit</a>
+                    <form method="POST" action="{% url 'delete_product' product.id %}" class="inline"
+                          onsubmit="return confirm('Delete this product and its stock history?')">
+                        {% csrf_token %}
+                        <button type="submit" class="danger">Delete</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No products found.</p>
+    {% endif %}
 {% endblock %}
 ```
 
-```django title="templates/inventory/product_form.html"
-{% extends "base.html" %}
-{% block title %}{% if product %}Edit{% else %}New{% endif %} product{% endblock %}
+**What it does**
+- The search form uses **GET**, so the text ends up in the URL (`/products/?search=usb`).
+- `{% if product.is_low_stock %}` calls the model method. In templates you write it **without** `()`.
+- `{% if product.supplier %}` is needed because the supplier can be empty. Then we show `-`.
+- `{% if user.is_staff %}` hides the Add, Edit and Delete buttons from workers.
+- Delete is a small **POST form** with `{% csrf_token %}`, plus a browser `confirm(...)` popup.
+
+### add_product.html
+
+```html title="templates/add_product.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article>
-  <h2>{% if product %}Edit {{ product.name }}{% else %}New product{% endif %}</h2>
-  {% if product %}<p>Current stock: <strong>{{ product.quantity }}</strong> (change it with a stock movement)</p>{% endif %}
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Save</button>
-  </form>
-</article>
+    <h2>Add Product</h2>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Name</label>
+        <input type="text" name="name" required>
+
+        <label>SKU (product code)</label>
+        <input type="text" name="sku" required>
+
+        <label>Category</label>
+        <select name="category" required>
+            {% for category in categories %}
+                <option value="{{ category.id }}">{{ category.name }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Supplier</label>
+        <select name="supplier">
+            <option value="">-- No supplier --</option>
+            {% for supplier in suppliers %}
+                <option value="{{ supplier.id }}">{{ supplier.name }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Unit</label>
+        <select name="unit">
+            <option value="pcs">Pieces</option>
+            <option value="kg">Kilogram</option>
+            <option value="ltr">Litre</option>
+            <option value="box">Box</option>
+        </select>
+
+        <label>Price (Rs.)</label>
+        <input type="number" name="price" step="0.01" min="0.01" required>
+
+        <label>Reorder level (warn when stock is at or below this)</label>
+        <input type="number" name="reorder_level" value="10" min="0" required>
+
+        <p>New products start with 0 in stock. Use <b>Stock In / Out</b> to add stock.</p>
+        <button type="submit">Save Product</button>
+    </form>
 {% endblock %}
 ```
 
-```django title="templates/inventory/stock_form.html"
-{% extends "base.html" %}
-{% block title %}Adjust stock{% endblock %}
+**What it does**
+- Every input's `name` matches a `request.POST.get('...')` in the view.
+- Category and supplier dropdowns are built with `{% for %}` loops. They send the **id** of the chosen row.
+- The first supplier option has `value=""`. That's the empty text the view turns into `None`.
+- Unit options use the **values** from `UNIT_CHOICES` (`pcs`, `kg`...).
+- `step="0.01"` lets the price have paise (decimals). `min` and `required` are quick browser checks.
+
+### edit_product.html
+
+```html title="templates/edit_product.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article style="max-width:560px">
-  <h2>Stock in / out</h2>
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Record</button>
-  </form>
-</article>
+    <h2>Edit Product</h2>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Name</label>
+        <input type="text" name="name" value="{{ product.name }}" required>
+
+        <label>SKU (product code)</label>
+        <input type="text" name="sku" value="{{ product.sku }}" required>
+
+        <label>Category</label>
+        <select name="category" required>
+            {% for category in categories %}
+                <option value="{{ category.id }}" {% if category.id == product.category_id %}selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Supplier</label>
+        <select name="supplier">
+            <option value="">-- No supplier --</option>
+            {% for supplier in suppliers %}
+                <option value="{{ supplier.id }}" {% if supplier.id == product.supplier_id %}selected{% endif %}>{{ supplier.name }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Unit</label>
+        <select name="unit">
+            <option value="pcs" {% if product.unit == 'pcs' %}selected{% endif %}>Pieces</option>
+            <option value="kg" {% if product.unit == 'kg' %}selected{% endif %}>Kilogram</option>
+            <option value="ltr" {% if product.unit == 'ltr' %}selected{% endif %}>Litre</option>
+            <option value="box" {% if product.unit == 'box' %}selected{% endif %}>Box</option>
+        </select>
+
+        <label>Price (Rs.)</label>
+        <input type="number" name="price" value="{{ product.price }}" step="0.01" min="0.01" required>
+
+        <label>Reorder level</label>
+        <input type="number" name="reorder_level" value="{{ product.reorder_level }}" min="0" required>
+
+        <p>Current stock: <b>{{ product.quantity }} {{ product.unit }}</b> (change it on the Stock In / Out page)</p>
+        <button type="submit">Update Product</button>
+    </form>
 {% endblock %}
 ```
 
-```django title="templates/inventory/sale_form.html"
-{% extends "base.html" %}
-{% block title %}New sale{% endblock %}
+**What it does**
+- It's the same form as Add, but every input starts **filled in** with the product's current values.
+- `product.category_id` is the id stored in the foreign key column. `{% if category.id == product.category_id %}selected{% endif %}` pre-selects the current category.
+- Quantity is only **shown**, never edited here.
+
+### stock_entry.html
+
+```html title="templates/stock_entry.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article>
-  <h2>New sale</h2>
-  <form method="post">
-    {% csrf_token %}
-    {% if form.non_field_errors %}<p class="low">{{ form.non_field_errors|join:" " }}</p>{% endif %}
-    <div class="grid">
-      <label>Customer {{ form.customer }}</label>
-      <label>GST % {{ form.tax_percentage }}</label>
-    </div>
+    <h2>Stock In / Out</h2>
 
-    {{ formset.management_form }}
-    <table>
-      <thead><tr><th>Product</th><th style="width:140px">Qty</th></tr></thead>
-      <tbody>
-      {% for line in formset %}
-        <tr>
-          <td>{{ line.product }}{{ line.product.errors }}</td>
-          <td>{{ line.quantity }}{{ line.quantity.errors }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    <small>Leave unused rows empty. Prices come from the product, GST is added on top.</small>
-    <button type="submit">Save sale</button>
-  </form>
-</article>
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <label>Product</label>
+        <select name="product" required>
+            {% for product in products %}
+                <option value="{{ product.id }}">{{ product.name }} ({{ product.sku }}) - in stock: {{ product.quantity }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Type</label>
+        <select name="transaction_type" required>
+            <option value="in">Stock In (goods received)</option>
+            <option value="out">Stock Out (goods sold / used)</option>
+        </select>
+
+        <label>Quantity</label>
+        <input type="number" name="quantity" min="1" required>
+
+        <label>Note</label>
+        <input type="text" name="note" placeholder="e.g. Received from ABC Traders / Sold to customer">
+
+        <button type="submit">Save</button>
+    </form>
 {% endblock %}
 ```
 
-```django title="templates/inventory/sale_detail.html"
-{% extends "base.html" %}
-{% block title %}{{ sale }}{% endblock %}
+**What it does**
+- The product dropdown shows the current stock, so the worker knows how much can go out.
+- The `value`s `in` and `out` match `TYPE_CHOICES` in the model.
+- If the view finds a problem (for example *Not enough stock*), it shows it in red at the top and saves nothing.
+
+### transaction_list.html
+
+```html title="templates/transaction_list.html"
+{% extends 'base.html' %}
+
 {% block content %}
-<article>
-  <header style="display:flex;justify-content:space-between">
-    <div>
-      <h2 style="margin:0">Invoice {{ sale }}</h2>
-      <small>{{ sale.created_at|date:"d M Y, H:i" }} · billed by {{ sale.created_by|default:"—" }}</small>
-    </div>
-    <div class="right">
-      <strong>{{ sale.customer.name|default:"Walk-in customer" }}</strong><br>
-      <small>{{ sale.customer.phone|default:"" }}</small>
-    </div>
-  </header>
+    <h2>Stock History</h2>
 
-  <table>
-    <thead><tr><th>#</th><th>Item</th><th class="right">Qty</th><th class="right">Rate ₹</th><th class="right">Amount ₹</th></tr></thead>
-    <tbody>
-    {% for item in items %}
-      <tr>
-        <td>{{ forloop.counter }}</td>
-        <td>{{ item.product.name }} <small>({{ item.product.sku }})</small></td>
-        <td class="right">{{ item.quantity }}</td>
-        <td class="right">{{ item.unit_price }}</td>
-        <td class="right">{{ item.line_total }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-    <tfoot>
-      <tr><td colspan="4" class="right">Sub total</td><td class="right">{{ sale.sub_total }}</td></tr>
-      <tr><td colspan="4" class="right">GST {{ sale.tax_percentage }}%</td><td class="right">{{ sale.tax_amount }}</td></tr>
-      <tr><th colspan="4" class="right">Grand total</th><th class="right">₹ {{ sale.grand_total }}</th></tr>
-    </tfoot>
-  </table>
-  <button class="no-print" onclick="window.print()">Print invoice</button>
-</article>
+    <p>
+        Filter:
+        <a href="{% url 'transaction_list' %}">All</a> |
+        <a href="?type=in">Stock In</a> |
+        <a href="?type=out">Stock Out</a>
+    </p>
+
+    {% if transactions %}
+        <table>
+            <tr>
+                <th>When</th>
+                <th>Product</th>
+                <th>Type</th>
+                <th>Quantity</th>
+                <th>Note</th>
+                <th>By</th>
+            </tr>
+            {% for t in transactions %}
+            <tr>
+                <td>{{ t.created_at|date:"d M Y, H:i" }}</td>
+                <td>{{ t.product.name }}</td>
+                <td>{{ t.get_transaction_type_display }}</td>
+                <td>{% if t.transaction_type == 'in' %}+{% else %}-{% endif %}{{ t.quantity }}</td>
+                <td>{{ t.note }}</td>
+                <td>{{ t.created_by.username }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No stock movements yet.</p>
+    {% endif %}
 {% endblock %}
 ```
+
+**What it does**
+- The filter links add `?type=in` or `?type=out`. The view reads it with `request.GET.get('type')`.
+- `+` or `-` in front of the quantity makes it easy to see which way the stock moved.
+- This table is your **audit log**: every change to stock, who made it and when.
+
+## 17. Run and check everything
 
 ```bash
 python manage.py runserver
 ```
 
-Open <http://127.0.0.1:8000/> and log in as `staff` / `pass1234`. Make a sale, print the invoice, adjust stock, and watch the dashboard update. **Checkpoint 3.**
+Open `http://127.0.0.1:8000/` and go through this checklist:
 
-## 13. Automated tests
+1. You're sent to `/login/` because the dashboard has `@login_required`.
+2. Click **Sign up**, create `worker2`. You're logged in and see the dashboard.
+3. **Products** shows the list but **no** Add, Edit or Delete buttons (worker2 is not staff).
+4. **Stock In / Out** → Stock In 30 Notebooks. **History** shows `+30`.
+5. Stock Out 100 Notebooks, and you see the red *Not enough stock* error.
+6. Stock Out until the quantity is at or below the reorder level. It shows **(LOW)** on Products and appears on the Dashboard.
+7. Log out and log in as the superuser. Add a product, edit it, and try the same SKU twice to see the error.
 
-```python title="inventory/tests.py"
-from decimal import Decimal
+> [!TIP] Done
+> You now have models, admin, a JWT-protected REST API with register, staff permissions and stock rules, plus web pages with signup and login. That's a complete inventory management system.
 
-from django.contrib.auth.models import User
-from django.urls import reverse
-from rest_framework import status
-from rest_framework.test import APITestCase
+## 18. Explain it in the interview
 
-from .models import Category, Product, Purchase, StockMovement, Supplier
-
-
-class InventoryAPITests(APITestCase):
-    def setUp(self):
-        self.manager = User.objects.create_user("manager", password="pass1234", is_staff=True)
-        self.staff = User.objects.create_user("staff", password="pass1234")
-        self.category = Category.objects.create(name="Electronics")
-        self.supplier = Supplier.objects.create(name="Acme", phone="9811111111")
-        self.mouse = Product.objects.create(
-            name="Mouse", sku="M-1", category=self.category, supplier=self.supplier,
-            cost_price=Decimal("400"), selling_price=Decimal("500"), quantity=10, reorder_level=3,
-        )
-        self.cable = Product.objects.create(
-            name="Cable", sku="C-1", category=self.category,
-            cost_price=Decimal("50"), selling_price=Decimal("100"), quantity=2, reorder_level=5,
-        )
-
-    def login(self, username):
-        res = self.client.post(reverse("token_obtain_pair"), {"username": username, "password": "pass1234"})
-        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
-
-    def test_register_then_login(self):
-        res = self.client.post(reverse("register"), {
-            "username": "new", "password": "Counter@2024", "password2": "Counter@2024",
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.login("manager")  # just proves the token flow works
-
-    def test_staff_cannot_create_product(self):
-        self.login("staff")
-        res = self.client.post(reverse("product-list"), {
-            "name": "X", "sku": "X-1", "category": self.category.id, "cost_price": "1", "selling_price": "2",
-        })
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_quantity_is_read_only(self):
-        self.login("manager")
-        res = self.client.post(reverse("product-list"), {
-            "name": "Pen", "sku": "p-1", "category": self.category.id,
-            "cost_price": "5", "selling_price": "10", "quantity": 999,
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(res.data["quantity"], 0)
-        self.assertEqual(res.data["sku"], "P-1")
-
-    def test_sale_reduces_stock_and_calculates_gst(self):
-        self.login("staff")
-        res = self.client.post(reverse("sale-list"), {
-            "tax_percentage": "18.00",
-            "items": [{"product": self.mouse.id, "quantity": 2}, {"product": self.cable.id, "quantity": 1}],
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(res.data["sub_total"], "1100.00")
-        self.assertEqual(res.data["tax_amount"], "198.00")
-        self.assertEqual(res.data["grand_total"], "1298.00")
-        self.mouse.refresh_from_db()
-        self.assertEqual(self.mouse.quantity, 8)
-
-    def test_overselling_rolls_back_whole_sale(self):
-        self.login("staff")
-        res = self.client.post(reverse("sale-list"), {
-            "items": [{"product": self.mouse.id, "quantity": 1}, {"product": self.cable.id, "quantity": 50}],
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.mouse.refresh_from_db()
-        self.assertEqual(self.mouse.quantity, 10)  # the first line was rolled back too
-        self.assertFalse(StockMovement.objects.exists())
-
-    def test_receive_purchase_adds_stock(self):
-        self.login("manager")
-        purchase = Purchase.objects.create(supplier=self.supplier, product=self.cable, quantity=20, unit_cost=Decimal("45"))
-        res = self.client.post(reverse("purchase-receive", args=[purchase.id]))
-        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        self.cable.refresh_from_db()
-        self.assertEqual(self.cable.quantity, 22)
-        self.assertEqual(self.cable.cost_price, Decimal("45.00"))
-        res = self.client.post(reverse("purchase-receive", args=[purchase.id]))
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)  # can't receive twice
-
-    def test_low_stock_filter(self):
-        self.login("staff")
-        res = self.client.get(reverse("product-list"), {"low_stock": "true"})
-        self.assertEqual([p["sku"] for p in res.data["results"]], ["C-1"])
-```
-
-```bash
-python manage.py test
-```
-
-Expected: `Ran 7 tests ... OK`. Then save the requirements:
-
-```bash
-pip freeze > requirements.txt
-```
-
-## 14. Explain it like a pro
-
-### What happens on `POST /api/sales/`
+**"Walk me through what happens when Postman records a stock out."**
 
 ```flow
-Router | /api/sales/ maps to SaleViewSet.create
-JWT | JWTAuthentication turns the Bearer token into request.user
-Permission | IsAuthenticated (the default from settings)
-SaleSerializer.is_valid() | checks every nested item, then validate_items() rejects duplicates
-serializer.save() | calls our create(), which calls services.create_sale()
-transaction.atomic | creates the Sale, then for each line: lock row, check stock, F() update, audit row, SaleItem
-recalculate() | aggregate Sum(price x qty), then GST, then grand total
-Response | 201 with the nested invoice JSON (or 400 with everything rolled back)
+POST /api/stock/ | Postman sends JSON + Authorization: Bearer <token>
+urls.py | the router sends it to StockTransactionViewSet → create
+JWTAuthentication | reads the token, sets request.user = worker1
+IsAuthenticated | the user is logged in → allowed (else 401)
+StockTransactionSerializer | validate_quantity, then validate() checks there is enough stock (else 400)
+perform_create | saves the transaction with created_by, then subtracts from product.quantity
+Response | 201 Created + the transaction as JSON
 ```
 
-### Likely questions
+**Questions you may get**
 
-**Q: Why a `services.py`?**
-It holds business rules in one place. The API, the HTML views, the seed command and the tests all call `record_movement()`. Views stay thin and easy to test. ("Fat models / services, thin views.")
-
-**Q: How do you prevent overselling when two people sell at once?**
-`select_for_update()` inside `transaction.atomic()` locks the product row until the transaction ends. The second request waits, then sees the reduced quantity. The update itself uses `F("quantity") - n`, so the subtraction happens in SQL.
-
-**Q: Why store `unit_price` on `SaleItem` when the product already has a price?**
-Prices change. An invoice must show what the customer actually paid that day.
-
-**Q: Why soft delete products?**
-Old sales and movements reference them, and `PROTECT` would block a hard delete anyway. Setting `is_active = False` keeps history intact.
-
-**Q: `ModelViewSet` vs mixins?**
-`SaleViewSet` and `StockMovementViewSet` use only the List, Retrieve and Create mixins, so **no update or delete URLs exist**. Financial and audit records should be immutable.
-
-**Q: `select_related` vs `prefetch_related`?**
-`select_related` uses a SQL JOIN for FK/one-to-one (`product.category`). `prefetch_related` runs a second query for reverse-FK/many (`sale.items`). The `SaleViewSet` uses both.
-
-**Q: Why `DecimalField` for money?**
-Floats are binary approximations. `Decimal` is exact, and `.quantize(Decimal("0.01"))` rounds to paise.
-
-**Q: How does JWT refresh work?**
-Access tokens are short-lived (60 min) and sent on every request. When one expires, the client posts the long-lived refresh token to `/api/auth/refresh/` and gets a new access token, without asking for the password again.
-
-## 15. Common errors and fixes
-
-| Error | Fix |
+| Question | Short answer |
 |---|---|
-| `No module named 'django_filters'` | `pip install django-filter` (the package name has a dash, the app name an underscore) |
-| `'ProductViewSet' should either include a queryset attribute...` | ViewSets need `queryset = ...`, or `basename=` in `router.register` |
-| `TypeError: unsupported operand type(s) for *: 'decimal.Decimal' and 'float'` | Use `Decimal("18")`, not `18.0`, in money maths |
-| `Expression contains mixed types: DecimalField, PositiveIntegerField` | Wrap it: `ExpressionWrapper(F(a) * F(b), output_field=DecimalField(...))` |
-| Nested `items` not saved / `.create() does not support writable nested fields` | Override `create()` in the serializer (we call the service) |
-| Postman sends the `items` list as text | Body → **raw → JSON**, not form-data |
-| `401 Authentication credentials were not provided` | Add the `Authorization: Bearer <access>` header |
-| `TemplateDoesNotExist: registration/login.html` | `templates/` must be next to `manage.py`, with `DIRS = [BASE_DIR / "templates"]` |
+| What is a serializer? | It converts model objects to JSON and back, and validates input. It's like a ModelForm for APIs. |
+| `read_only_fields` vs `write_only=True`? | Read-only: shown in responses but can't be sent (quantity). Write-only: can be sent but is never shown (password). |
+| Why override `create()` in RegisterSerializer? | So the password is hashed with `create_user()`. A plain save would store it as text and login would fail. |
+| What is `perform_create`? | A ViewSet hook that runs after validation, in place of `serializer.save()`. We use it to add `created_by` and update the stock. |
+| Why can't you edit stock transactions? | `http_method_names = ['get', 'post']`. Changing history would make the quantities wrong. To fix a mistake you add a new transaction. |
+| `@api_view` vs `ModelViewSet`? | `@api_view` is a single function for custom endpoints (register, reports). `ModelViewSet` is full CRUD for one model. |
+| What does `many=True` do? | It tells the serializer it's getting a list of objects, so it returns a JSON list. |
+| Why `DecimalField` for price? | It's exact. A float can't store values like 0.1 exactly, which is bad for money. |
+| What is JWT? | A signed token given at login. The client sends it in the `Authorization: Bearer` header on every request. |
+| Access vs refresh token? | Access is short-lived and used on every request. Refresh is longer-lived and only used to get a new access token. |
+| 401 vs 403? | 401 = not logged in or bad token. 403 = logged in but not allowed (worker trying to add a product). |
+| How do you do roles here? | With Django's built-in `is_staff` flag, checked by the `IsStaffOrReadOnly` permission class and in the web views. |
+| What if two people sell the last item at the same moment? | In a real system you'd wrap the stock update in `transaction.atomic()` and lock the row with `select_for_update()`. Mention it. You don't need to code it in a practical. |
 
-## 16. If they ask for one more feature
+## 19. Common errors and fixes
 
-**Customer returns:** call `record_movement(product=p, movement_type="IN", quantity=n, reason=..., note=f"Return INV-{sale.pk}")`. Add a `RETURN = "RETURN", "Return"` choice to `StockMovement.Reason` and run `makemigrations`.
-
-**CSV export of products:**
-
-```python title="inventory/web_views.py — add"
-import csv
-from django.http import HttpResponse
-
-
-@login_required
-def export_products_csv(request):
-    response = HttpResponse(content_type="text/csv")
-    response["Content-Disposition"] = 'attachment; filename="products.csv"'
-    writer = csv.writer(response)
-    writer.writerow(["SKU", "Name", "Category", "Qty", "Cost", "Price"])
-    for p in Product.objects.select_related("category"):
-        writer.writerow([p.sku, p.name, p.category.name, p.quantity, p.cost_price, p.selling_price])
-    return response
-```
-
-```python title="inventory/web_urls.py — add"
-    path("products/export/", views.export_products_csv, name="product_export"),
-```
-
-**Email alert when stock is low:** in `record_movement()`, after the update, check `if movement.balance_after <= locked.reorder_level:` and call `django.core.mail.send_mail(...)`. Set `EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"` to print emails to the terminal.
-
-**CORS for a React front end / Swagger docs / PostgreSQL:** same steps as section 17 of the [hospital project](/project/hospital#17-if-they-ask-for-one-more-feature).
+| Error | Cause | Fix |
+|---|---|---|
+| `No module named 'rest_framework_simplejwt'` | Package not installed, or the venv isn't active | Activate the venv, then `pip install djangorestframework-simplejwt` |
+| `no such table: inventoryapp_product` | Migrations not run | `python manage.py makemigrations` then `python manage.py migrate` |
+| `TemplateDoesNotExist: dashboard.html` | `DIRS` not set, or the file is in the wrong folder | Check Step 2, and keep `templates/` next to `manage.py` |
+| `NoReverseMatch: Reverse for 'product_list' not found` | URL name typo, or app URLs not included | Check `name=` in Step 14 and the last line of Step 15 |
+| `CSRF verification failed` (403) | A POST form without `{% csrf_token %}` | Add `{% csrf_token %}` inside the `<form>` |
+| Postman: *Authentication credentials were not provided* | No token, or the `REST_FRAMEWORK` block is missing | Use Bearer Token in Postman, and check Step 11 |
+| Postman: *Token is invalid or expired* | The access token is older than 5 minutes | Call `/api/token/refresh/` or log in again |
+| Postman register gives 401 | An old expired Bearer token is still set on the request | Set Authorization to **No Auth** for register and token requests |
+| Login fails for a user made in admin or the API | Password was saved as plain text | Use `create_user()` (as in RegisterSerializer) or the admin's add-user form |
+| Quantity didn't change after adding a transaction in `/admin/` | The admin panel skips our view logic | Record stock through `/api/stock/` or the Stock In / Out page |
+| `basename` argument not specified | A viewset has `get_queryset` but no `queryset` | Add `basename='...'` to `router.register` |
